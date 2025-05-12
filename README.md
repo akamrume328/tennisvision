@@ -1,61 +1,61 @@
-# Tennis Vision Project
+# テニスビジョンプロジェクト
 
-## Overview
-The Tennis Vision Project is an application designed to analyze tennis matches using computer vision techniques. By leveraging YOLOv8 and OpenCV, this project aims to detect and track players, balls, and court lines in video footage, providing insights into player performance and match dynamics.
+## 概要
+テニスビジョンプロジェクトは、コンピュータビジョン技術を使用してテニスの試合を分析するために設計されたアプリケーションです。YOLOv8とOpenCVを活用することで、このプロジェクトはビデオ映像から選手、ボール、コートラインを検出・追跡し、選手のパフォーマンスや試合のダイナミクスに関する洞察を提供することを目的としています。
 
-## Project Structure
+## プロジェクト構成
 ```
 tennis-vision-project
 ├── data
-│   ├── processed          # Processed datasets ready for model training and evaluation
-│   └── raw               # Raw data, such as original video files or images
-├── models                 # Directory for storing trained model files
-├── notebooks              # Jupyter notebooks for data processing and model training
+│   ├── processed          # モデルのトレーニングと評価に使用できる状態に処理されたデータセット
+│   └── raw               # 元のビデオファイルや画像などの生データ
+├── models                 # 学習済みモデルファイルを格納するディレクトリ
+├── notebooks              # データ処理とモデルトレーニング用のJupyter Notebook
 │   ├── 1_data_preprocessing.ipynb
 │   └── 2_model_training.ipynb
-├── scripts                # Python scripts for data preprocessing and model training
+├── scripts                # データ前処理とモデルトレーニング用のPythonスクリプト
 │   ├── preprocess_data.py
 │   └── train.py
-├── src                    # Source code for the application
+├── src                    # アプリケーションのソースコード
 │   ├── __init__.py
-│   ├── config.py         # Configuration settings for the project
-│   ├── detection.py      # Functions and classes for object detection
-│   ├── main.py           # Main entry point of the application
-│   ├── tracking.py       # Functions and classes for object tracking
-│   └── utils.py          # Utility functions used across the project
-├── tests                  # Unit tests for the application
+│   ├── config.py         # プロジェクトの設定
+│   ├── detection.py      # 物体検出用の関数とクラス
+│   ├── main.py           # アプリケーションのメインエントリーポイント
+│   ├── tracking.py       # 物体追跡用の関数とクラス
+│   └── utils.py          # プロジェクト全体で使用されるユーティリティ関数
+├── tests                  # アプリケーションの単体テスト
 │   ├── __init__.py
 │   ├── test_detection.py
 │   └── test_tracking.py
-├── README.md              # Documentation for the project
-└── requirements.txt       # List of dependencies required for the project
+├── README.md              # プロジェクトのドキュメント
+└── requirements.txt       # プロジェクトに必要な依存関係のリスト
 ```
 
-## Setup Instructions
-1. **Clone the repository:**
-   ```
-   git clone <repository-url>
-   cd tennis-vision-project
-   ```
+## セットアップ手順
+1.  **リポジトリをクローンします:**
+    ```
+    git clone <repository-url>
+    cd tennis-vision-project
+    ```
 
-2. **Create a virtual environment:**
-   ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   ```
+2.  **仮想環境を作成します:**
+    ```
+    python -m venv venv
+    source venv/bin/activate  # Windowsでは `venv\Scripts\activate` を使用します
+    ```
 
-3. **Install the required packages:**
-   ```
-   pip install -r requirements.txt
-   ```
+3.  **必要なパッケージをインストールします:**
+    ```
+    pip install -r requirements.txt
+    ```
 
-## Usage Guidelines
-- **Data Preprocessing:** Use the Jupyter notebook `notebooks/1_data_preprocessing.ipynb` to load and preprocess the raw data.
-- **Model Training:** Train the model using `notebooks/2_model_training.ipynb`, adjusting hyperparameters as necessary.
-- **Running the Application:** Execute the main application by running `src/main.py`, which will orchestrate the workflow of data preprocessing, model training, and evaluation.
+## 利用ガイドライン
+-   **データ前処理:** Jupyter Notebook `notebooks/1_data_preprocessing.ipynb` を使用して生データを読み込み、前処理します。
+-   **モデルトレーニング:** `notebooks/2_model_training.ipynb` を使用してモデルをトレーニングし、必要に応じてハイパーパラメータを調整します。
+-   **アプリケーションの実行:** `src/main.py` を実行してメインアプリケーションを実行します。これにより、データの前処理、モデルのトレーニング、評価のワークフローが調整されます。
 
-## Contribution
-Contributions are welcome! Please open an issue or submit a pull request for any enhancements or bug fixes.
+## 貢献
+貢献を歓迎します！機能強化やバグ修正については、Issueを開くか、プルリクエストを送信してください。
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
+## ライセンス
+このプロジェクトはMITライセンスの下でライセンスされています - 詳細についてはLICENSEファイルを参照してください。
