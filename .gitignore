@@ -178,3 +178,6 @@ cython_debug/
 
 #modelhistory
 models/
+
+#data
+data/
