@@ -2,86 +2,164 @@
 import os
 import random
 from pathlib import Path
+import shutil
+import yaml
 
-def split_frame_identifiers(original_train_txt_path, output_dir, train_ratio=0.8):
+def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml', train_ratio=0.7, val_ratio=0.15):
     """
-    元の train.txt から画像ファイルパスを読み込み、シャッフルし、
-    新しい train.txt と val.txt ファイルに分割します。
+    Moves images and labels from specified directories into train/images, train/labels, 
+    val/images, val/labels, test/images, test/labels directories, splits them according to ratios, 
+    and updates data.yaml.
+    Assumes original images are in `dataset_base_dir/images` and labels in `dataset_base_dir/labels`.
     """
-    original_train_txt_path = Path(original_train_txt_path)
-    output_dir = Path(output_dir)
-    # 出力ディレクトリを作成（親ディレクトリも含む、既に存在する場合はエラーにしない）
-    output_dir.mkdir(parents=True, exist_ok=True)
+    dataset_base_dir = Path(dataset_base_dir)
+    data_yaml_path = dataset_base_dir / data_yaml_filename
 
-    new_train_file = output_dir / "train.txt"
-    new_val_file = output_dir / "val.txt"
+    original_images_dir = dataset_base_dir / 'images'
+    original_labels_dir = dataset_base_dir / 'labels'
 
-    # 元の train.txt が存在するか確認し、存在しない場合はエラーメッセージを表示して終了
-    if not original_train_txt_path.exists():
-        print(f"Error: Original train.txt not found at {original_train_txt_path}")
+    # Define new directory structure paths
+    new_train_images_dir = dataset_base_dir / 'train' / 'images'
+    new_train_labels_dir = dataset_base_dir / 'train' / 'labels'
+    new_val_images_dir = dataset_base_dir / 'val' / 'images'
+    new_val_labels_dir = dataset_base_dir / 'val' / 'labels'
+    new_test_images_dir = dataset_base_dir / 'test' / 'images'
+    new_test_labels_dir = dataset_base_dir / 'test' / 'labels'
+
+    # Create new directories
+    new_train_images_dir.mkdir(parents=True, exist_ok=True)
+    new_train_labels_dir.mkdir(parents=True, exist_ok=True)
+    new_val_images_dir.mkdir(parents=True, exist_ok=True)
+    new_val_labels_dir.mkdir(parents=True, exist_ok=True)
+    new_test_images_dir.mkdir(parents=True, exist_ok=True)
+    new_test_labels_dir.mkdir(parents=True, exist_ok=True)
+
+    image_files = []
+    if original_images_dir.exists():
+        image_files = [f for f in original_images_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+    else:
+        print(f"Warning: Original images directory not found: {original_images_dir}")
         return
 
-    image_file_paths = [] # 変数名を変更
-    # 元の train.txt を読み込みモードで開く
-    with open(original_train_txt_path, 'r') as f:
-        for line in f:
-            # 各行の前後の空白を削除
-            line = line.strip()
-            # 空行でない場合のみ処理
-            if line:
-                # 行全体（ファイルパス）をリストに追加
-                image_file_paths.append(line)
-
-    # 画像ファイルパスが見つからなかった場合はメッセージを表示して終了
-    if not image_file_paths:
-        print("No image file paths found in the original train.txt.")
+    if not image_files:
+        print(f"No image files found in {original_images_dir}")
         return
 
-    # 画像ファイルパスのリストをランダムにシャッフル
-    random.shuffle(image_file_paths)
+    # Create a list of (image_path, label_path) tuples
+    dataset_pairs = []
+    for img_path in image_files:
+        label_filename = img_path.stem + '.txt'
+        label_path = original_labels_dir / label_filename
+        if label_path.exists():
+            dataset_pairs.append((img_path, label_path))
+        else:
+            print(f"Warning: Label file not found for image {img_path.name} at {label_path}")
 
-    # train_ratio に基づいて訓練データと検証データの分割点を計算
-    split_index = int(len(image_file_paths) * train_ratio)
-    # 訓練データ用のパスリストを作成
-    train_paths = image_file_paths[:split_index]
-    # 検証データ用のパスリストを作成
-    val_paths = image_file_paths[split_index:]
+    if not dataset_pairs:
+        print("No image-label pairs found.")
+        return
 
-    # 新しい train.txt ファイルに訓練データパスを書き込む
-    with open(new_train_file, 'w') as f:
-        for path_entry in train_paths: # 変数名を変更
-            f.write(f"{path_entry}\n") # 完全なパスを書き込む
-    print(f"新しい train.txt を作成しました。エントリ数: {len(train_paths)}, パス: {new_train_file}")
+    random.shuffle(dataset_pairs)
 
-    # 新しい val.txt ファイルに検証データパスを書き込む
-    with open(new_val_file, 'w') as f:
-        for path_entry in val_paths: # 変数名を変更
-            f.write(f"{path_entry}\n") # 完全なパスを書き込む
-    print(f"新しい val.txt を作成しました。エントリ数: {len(val_paths)}, パス: {new_val_file}")
+    total_pairs = len(dataset_pairs)
+    train_end_idx = int(total_pairs * train_ratio)
+    val_end_idx = train_end_idx + int(total_pairs * val_ratio)
+
+    train_pairs = dataset_pairs[:train_end_idx]
+    val_pairs = dataset_pairs[train_end_idx:val_end_idx]
+    test_pairs = dataset_pairs[val_end_idx:]
+
+    def move_pairs(pairs, target_img_dir, target_lbl_dir):
+        for img_path, lbl_path in pairs:
+            try:
+                shutil.move(str(img_path), str(target_img_dir / img_path.name))
+                shutil.move(str(lbl_path), str(target_lbl_dir / lbl_path.name))
+            except Exception as e:
+                print(f"Error moving file: {e}")
+
+    print(f"Moving {len(train_pairs)} pairs to training set...")
+    move_pairs(train_pairs, new_train_images_dir, new_train_labels_dir)
+    print(f"Moving {len(val_pairs)} pairs to validation set...")
+    move_pairs(val_pairs, new_val_images_dir, new_val_labels_dir)
+    if test_pairs:
+        print(f"Moving {len(test_pairs)} pairs to test set...")
+        move_pairs(test_pairs, new_test_images_dir, new_test_labels_dir)
+    else:
+        print("No pairs for the test set.")
+
+    # Update data.yaml
+    if data_yaml_path.exists():
+        with open(data_yaml_path, 'r') as f:
+            data_config = yaml.safe_load(f)
+
+        data_config['train'] = '../train/images'  # Relative to 'path'
+        data_config['val'] = '../val/images'    # Relative to 'path'
+        data_config['test'] = '../test/images' 
+
+        # Update test entry
+        if test_pairs: # テストセットが実際に作成された場合
+            data_config['test'] = 'test/images'
+            print("Updated 'test' entry in data.yaml to point to test/images.")
+        elif 'test' in data_config: # テストセットが作成されず、yamlに既存のエントリがある場合
+            del data_config['test']
+            print("Removed 'test' entry from data.yaml as no test set was created.")
+
+
+        with open(data_yaml_path, 'w') as f:
+            yaml.dump(data_config, f, sort_keys=False, default_flow_style=None)
+        print(f"Updated {data_yaml_path}")
+    else:
+        print(f"Warning: data.yaml not found at {data_yaml_path}. Cannot update.")
+
+    print("Dataset reorganization complete.")
+    
+    # Optional: Clean up old train.txt, val.txt, and test.txt if they exist
+    for txt_file_name in ['train.txt', 'val.txt', 'test.txt']:
+        txt_file_path = dataset_base_dir / txt_file_name
+        if txt_file_path.exists():
+            try:
+                txt_file_path.unlink()
+                print(f"Removed old {txt_file_name}")
+            except OSError as e:
+                print(f"Error removing {txt_file_name}: {e}")
+
+    # Optional: Attempt to remove original 'images' and 'labels' directories
+    # if they are now empty.
+    for original_dir in [original_images_dir, original_labels_dir]:
+        try:
+            if original_dir.exists() and not any(original_dir.iterdir()):
+                original_dir.rmdir()
+                print(f"Removed empty original directory: {original_dir}")
+        except OSError as e:
+            print(f"Could not remove {original_dir} (it might not be empty or other issues): {e}")
+
 
 if __name__ == "__main__":
     # --- 設定 ---
-    # 現在の train.txt ファイルへのパス（フルパスが記述されているもの）
-    # スクリプトがプロジェクトルートにない場合は、このパスを調整してください
-    current_train_txt = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/dataset/train.txt")
-
-    # 新しい train.txt, val.txt, data.yaml が配置されるディレクトリ
-    target_dataset_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/dataset")
+    # \'data.yaml\' が配置されるディレクトリ (通常は dataset/)
+    # このディレクトリ内に元の images/ および labels/ ディレクトリがあると仮定
+    dataset_root_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/dataset")
+    
+    # 分割比率 (train_ratio + val_ratio <= 1.0 であること)
+    # 残りが test_ratio となります。
+    train_split_ratio = 0.7
+    val_split_ratio = 0.15
+    # test_split_ratio は自動的に 1.0 - train_split_ratio - val_split_ratio になります。
     # --- 設定終了 ---
 
-    # プロジェクトルートからの相対パスで元の train.txt が存在するか確認
-    # このスクリプトがプロジェクトルート 'tennisvision/' から実行されることを想定
-    project_root = Path().cwd() # 'tennisvision/' であるべき
-    original_file_path_check = project_root / current_train_txt
-
-    if not original_file_path_check.exists():
-        print(f"エラー: 元の train.txt が見つかりませんでした: {original_file_path_check}")
-        print("パスが正しいこと、およびスクリプトがプロジェクトルートから実行されていることを確認してください。")
+    if not dataset_root_dir.exists() or not (dataset_root_dir / 'images').exists() or not (dataset_root_dir / 'labels').exists():
+        print(f"エラー: データセットのルートディレクトリ、またはその中の \'images\'/\'labels\' ディレクトリが見つかりません: {dataset_root_dir}")
+        print("パスが正しいことを確認してください。\'images\' および \'labels\' ディレクトリが {dataset_root_dir} 直下にある必要があります。")
+    elif (train_split_ratio + val_split_ratio) > 1.0:
+        print(f"エラー: train_ratio ({train_split_ratio}) と val_ratio ({val_split_ratio}) の合計が1.0を超えています。")
     else:
-        split_frame_identifiers(original_file_path_check, target_dataset_dir)
-        print("\n注意: 新しい train.txt および val.txt と同じディレクトリに 'data.yaml' があることを確認し、")
-        print("'val: val.txt' を含むように更新してください（必要な場合）。")
-        print("また、画像ファイルで学習する場合、これらの .txt ファイルにリストされた各画像ファイルに対応する")
-        print("ラベルファイル（例: 'labels/' ディレクトリ内に同じファイル名で拡張子が .txt のファイル）が")
-        print(f"'{target_dataset_dir}' を基準として正しく配置されていることを確認してください。")
-        print("例: 'train.txt' 内の '../images/frame_0001.png' に対応するラベルは '../labels/frame_0001.txt' のようになります。")
+        print(f"データセットを再編成します: {dataset_root_dir}")
+        print(f"訓練セットの割合: {train_split_ratio}, 検証セットの割合: {val_split_ratio}")
+        test_split_ratio = 1.0 - train_split_ratio - val_split_ratio
+        print(f"テストセットの割合 (自動計算): {test_split_ratio:.2f}")
+        
+        reorganize_dataset_for_yolo(dataset_root_dir, train_ratio=train_split_ratio, val_ratio=val_split_ratio)
+        
+        print("\\n--- データセットの再編成処理が完了しました。 ---")
+        print(f"ディレクトリ構造を確認してください: {dataset_root_dir}")
+        print("data.yaml が正しく \'train/images\', \'val/images\', \'test/images\' (存在する場合) を指し、\'path: .\' となっていることを確認してください。")
