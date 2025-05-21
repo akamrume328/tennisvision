@@ -9,16 +9,21 @@ class ObjectTracker:
 
     def track_objects(self, frame):
         # Perform object detection
-        detections = self.model.detect(frame)
+        results = self.model(frame, verbose=False)  # verbose=False を追加
         tracked_objects = []
 
-        for detection in detections:
-            x1, y1, x2, y2, confidence, class_id = detection
-            tracked_objects.append({
-                'bbox': (x1, y1, x2, y2),
-                'confidence': confidence,
-                'class_id': class_id
-            })
+        # Process results if detections are present
+        if results and results[0].boxes:  # Check if results[0] and results[0].boxes exist
+            for box in results[0].boxes:  # Iterate through detected boxes
+                x1, y1, x2, y2 = map(int, box.xyxy[0])  # Get coordinates
+                confidence = float(box.conf[0])  # Get confidence score
+                class_id = int(box.cls[0])  # Get class ID
+                
+                tracked_objects.append({
+                    'bbox': (x1, y1, x2, y2),
+                    'confidence': confidence,
+                    'class_id': class_id
+                })
 
         return tracked_objects
 

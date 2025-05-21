@@ -1,28 +1,28 @@
 import unittest
-from src.tracking import TrackObject  # Assuming TrackObject is a class in tracking.py
+from src.tracking import TrackObject  # tracking.py の TrackObject クラスを想定
 
 class TestTracking(unittest.TestCase):
 
     def setUp(self):
-        self.tracker = TrackObject()  # Initialize the tracker object
+        self.tracker = TrackObject()  # トラッカーオブジェクトを初期化
 
     def test_initialize_tracker(self):
         self.assertIsNotNone(self.tracker)
 
     def test_track_object(self):
-        # Example test for tracking an object
-        test_frame = ...  # Load or create a test frame
+        # オブジェクト追跡のテスト例
+        test_frame = ...  # テストフレームをロードまたは作成
         tracked_objects = self.tracker.track(test_frame)
-        self.assertIsInstance(tracked_objects, list)  # Check if the output is a list
-        self.assertGreater(len(tracked_objects), 0)  # Ensure at least one object is tracked
+        self.assertIsInstance(tracked_objects, list)  # 出力がリストであるか確認
+        self.assertGreater(len(tracked_objects), 0)  # 少なくとも1つのオブジェクトが追跡されていることを確認
 
     def test_update_tracker(self):
-        # Example test for updating the tracker with a new frame
-        initial_frame = ...  # Load or create an initial frame
+        # 新しいフレームでトラッカーを更新するテスト例
+        initial_frame = ...  # 初期フレームをロードまたは作成
         self.tracker.track(initial_frame)
-        new_frame = ...  # Load or create a new frame
+        new_frame = ...  # 新しいフレームをロードまたは作成
         updated_objects = self.tracker.track(new_frame)
-        self.assertNotEqual(updated_objects, [])  # Ensure the tracker updates with new frame
+        self.assertNotEqual(updated_objects, [])  # トラッカーが新しいフレームで更新されることを確認
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,10 +7,10 @@ import yaml
 
 def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml', train_ratio=0.7, val_ratio=0.15):
     """
-    Moves images and labels from specified directories into train/images, train/labels, 
-    val/images, val/labels, test/images, test/labels directories, splits them according to ratios, 
-    and updates data.yaml.
-    Assumes original images are in `dataset_base_dir/images` and labels in `dataset_base_dir/labels`.
+    指定されたディレクトリから画像とラベルを train/images, train/labels,
+    val/images, val/labels, test/images, test/labels ディレクトリに移動し、指定された比率で分割し、
+    data.yaml を更新します。
+    元の画像は `dataset_base_dir/images` に、ラベルは `dataset_base_dir/labels` にあると仮定します。
     """
     dataset_base_dir = Path(dataset_base_dir)
     data_yaml_path = dataset_base_dir / data_yaml_filename
@@ -18,7 +18,7 @@ def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml'
     original_images_dir = dataset_base_dir / 'images'
     original_labels_dir = dataset_base_dir / 'labels'
 
-    # Define new directory structure paths
+    # 新しいディレクトリ構造のパスを定義
     new_train_images_dir = dataset_base_dir / 'train' / 'images'
     new_train_labels_dir = dataset_base_dir / 'train' / 'labels'
     new_val_images_dir = dataset_base_dir / 'val' / 'images'
@@ -26,7 +26,7 @@ def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml'
     new_test_images_dir = dataset_base_dir / 'test' / 'images'
     new_test_labels_dir = dataset_base_dir / 'test' / 'labels'
 
-    # Create new directories
+    # 新しいディレクトリを作成
     new_train_images_dir.mkdir(parents=True, exist_ok=True)
     new_train_labels_dir.mkdir(parents=True, exist_ok=True)
     new_val_images_dir.mkdir(parents=True, exist_ok=True)
@@ -38,14 +38,14 @@ def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml'
     if original_images_dir.exists():
         image_files = [f for f in original_images_dir.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
     else:
-        print(f"Warning: Original images directory not found: {original_images_dir}")
+        print(f"警告: 元の画像ディレクトリが見つかりません: {original_images_dir}")
         return
 
     if not image_files:
-        print(f"No image files found in {original_images_dir}")
+        print(f"画像ファイルが {original_images_dir} に見つかりません")
         return
 
-    # Create a list of (image_path, label_path) tuples
+    # (画像パス, ラベルパス) のタプルのリストを作成
     dataset_pairs = []
     for img_path in image_files:
         label_filename = img_path.stem + '.txt'
@@ -53,10 +53,10 @@ def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml'
         if label_path.exists():
             dataset_pairs.append((img_path, label_path))
         else:
-            print(f"Warning: Label file not found for image {img_path.name} at {label_path}")
+            print(f"警告: 画像 {img_path.name} のラベルファイルが見つかりません {label_path}")
 
     if not dataset_pairs:
-        print("No image-label pairs found.")
+        print("画像とラベルのペアが見つかりません。")
         return
 
     random.shuffle(dataset_pairs)
@@ -75,68 +75,67 @@ def reorganize_dataset_for_yolo(dataset_base_dir, data_yaml_filename='data.yaml'
                 shutil.move(str(img_path), str(target_img_dir / img_path.name))
                 shutil.move(str(lbl_path), str(target_lbl_dir / lbl_path.name))
             except Exception as e:
-                print(f"Error moving file: {e}")
+                print(f"ファイルの移動中にエラーが発生しました: {e}")
 
-    print(f"Moving {len(train_pairs)} pairs to training set...")
+    print(f"{len(train_pairs)} 個のペアを訓練セットに移動中...")
     move_pairs(train_pairs, new_train_images_dir, new_train_labels_dir)
-    print(f"Moving {len(val_pairs)} pairs to validation set...")
+    print(f"{len(val_pairs)} 個のペアを検証セットに移動中...")
     move_pairs(val_pairs, new_val_images_dir, new_val_labels_dir)
     if test_pairs:
-        print(f"Moving {len(test_pairs)} pairs to test set...")
+        print(f"{len(test_pairs)} 個のペアをテストセットに移動中...")
         move_pairs(test_pairs, new_test_images_dir, new_test_labels_dir)
     else:
-        print("No pairs for the test set.")
+        print("テストセット用のペアはありません。")
 
-    # Update data.yaml
+    # data.yaml を更新
     if data_yaml_path.exists():
         with open(data_yaml_path, 'r') as f:
             data_config = yaml.safe_load(f)
 
-        data_config['train'] = '../train/images'  # Relative to 'path'
-        data_config['val'] = '../val/images'    # Relative to 'path'
-        data_config['test'] = '../test/images' 
+        data_config['train'] = './train/images'  # 'path' からの相対パス
+        data_config['val'] = './val/images'    # 'path' からの相対パス
+        # data_config['test'] = '../test/images' # この行は下のロジックで設定されるため、一旦コメントアウトまたは削除しても良い
 
-        # Update test entry
+        # test エントリを更新
         if test_pairs: # テストセットが実際に作成された場合
-            data_config['test'] = 'test/images'
-            print("Updated 'test' entry in data.yaml to point to test/images.")
+            data_config['test'] = './test/images' # YOLOv5の規約に合わせて'../test/images'に修正
+            print("data.yaml の 'test' エントリを test/images を指すように更新しました。")
         elif 'test' in data_config: # テストセットが作成されず、yamlに既存のエントリがある場合
             del data_config['test']
-            print("Removed 'test' entry from data.yaml as no test set was created.")
+            print("テストセットが作成されなかったため、data.yaml から 'test' エントリを削除しました。")
 
 
         with open(data_yaml_path, 'w') as f:
             yaml.dump(data_config, f, sort_keys=False, default_flow_style=None)
-        print(f"Updated {data_yaml_path}")
+        print(f"{data_yaml_path} を更新しました")
     else:
-        print(f"Warning: data.yaml not found at {data_yaml_path}. Cannot update.")
+        print(f"警告: {data_yaml_path} に data.yaml が見つかりません。更新できません。")
 
-    print("Dataset reorganization complete.")
+    print("データセットの再編成が完了しました。")
     
-    # Optional: Clean up old train.txt, val.txt, and test.txt if they exist
+    # オプション: 既存の train.txt, val.txt, test.txt があれば削除
     for txt_file_name in ['train.txt', 'val.txt', 'test.txt']:
         txt_file_path = dataset_base_dir / txt_file_name
         if txt_file_path.exists():
             try:
                 txt_file_path.unlink()
-                print(f"Removed old {txt_file_name}")
+                print(f"古い {txt_file_name} を削除しました")
             except OSError as e:
-                print(f"Error removing {txt_file_name}: {e}")
+                print(f"{txt_file_name} の削除中にエラーが発生しました: {e}")
 
-    # Optional: Attempt to remove original 'images' and 'labels' directories
-    # if they are now empty.
+    # オプション: 元の 'images' および 'labels' ディレクトリが空であれば削除を試みる
     for original_dir in [original_images_dir, original_labels_dir]:
         try:
-            if original_dir.exists() and not any(original_dir.iterdir()):
+            if original_dir.exists() and not any(original_dir.iterdir()): # ディレクトリが存在し、かつ空であるかを確認
                 original_dir.rmdir()
-                print(f"Removed empty original directory: {original_dir}")
-        except OSError as e:
-            print(f"Could not remove {original_dir} (it might not be empty or other issues): {e}")
+                print(f"空の元のディレクトリを削除しました: {original_dir}")
+        except OSError as e: # 例: ディレクトリが空でない、権限がないなど
+            print(f"{original_dir} を削除できませんでした (空でないか、他の問題がある可能性があります): {e}")
 
 
 if __name__ == "__main__":
     # --- 設定 ---
-    # \'data.yaml\' が配置されるディレクトリ (通常は dataset/)
+    # 'data.yaml' が配置されるディレクトリ (通常は dataset/)
     # このディレクトリ内に元の images/ および labels/ ディレクトリがあると仮定
     dataset_root_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/dataset")
     
@@ -147,9 +146,19 @@ if __name__ == "__main__":
     # test_split_ratio は自動的に 1.0 - train_split_ratio - val_split_ratio になります。
     # --- 設定終了 ---
 
+    # 元の画像ファイル数を事前にカウント
+    original_images_path = dataset_root_dir / 'images'
+    initial_image_count = 0
+    if original_images_path.exists():
+        initial_image_count = len([f for f in original_images_path.iterdir() if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']])
+        print(f"処理前の元の画像ファイル数: {initial_image_count}")
+    else:
+        print(f"警告: 元の画像ディレクトリ {original_images_path} が見つかりません。ファイル数の事前カウントはスキップします。")
+
+
     if not dataset_root_dir.exists() or not (dataset_root_dir / 'images').exists() or not (dataset_root_dir / 'labels').exists():
-        print(f"エラー: データセットのルートディレクトリ、またはその中の \'images\'/\'labels\' ディレクトリが見つかりません: {dataset_root_dir}")
-        print("パスが正しいことを確認してください。\'images\' および \'labels\' ディレクトリが {dataset_root_dir} 直下にある必要があります。")
+        print(f"エラー: データセットのルートディレクトリ、またはその中の 'images'/'labels' ディレクトリが見つかりません: {dataset_root_dir}")
+        print(f"パスが正しいことを確認してください。'images' および 'labels' ディレクトリが {dataset_root_dir} 直下にある必要があります。")
     elif (train_split_ratio + val_split_ratio) > 1.0:
         print(f"エラー: train_ratio ({train_split_ratio}) と val_ratio ({val_split_ratio}) の合計が1.0を超えています。")
     else:
@@ -160,6 +169,57 @@ if __name__ == "__main__":
         
         reorganize_dataset_for_yolo(dataset_root_dir, train_ratio=train_split_ratio, val_ratio=val_split_ratio)
         
-        print("\\n--- データセットの再編成処理が完了しました。 ---")
+        print("\n--- データセットの再編成処理が完了しました。 ---")
         print(f"ディレクトリ構造を確認してください: {dataset_root_dir}")
-        print("data.yaml が正しく \'train/images\', \'val/images\', \'test/images\' (存在する場合) を指し、\'path: .\' となっていることを確認してください。")
+        print("data.yaml が正しく 'train: ../train/images', 'val: ../val/images', 'test: ../test/images' (存在する場合) のように、")
+        print(f"data.yaml内の 'path' エントリ (通常は '{dataset_root_dir.name}' や '.') からの相対パスで指定されていることを確認してください。")
+        print("\n--- ファイル数の確認 ---")
+        print(f"処理前の合計画像数 (目安): {initial_image_count}")
+
+        # 処理後の各セットのファイル数を確認
+        total_processed_images = 0
+        for split in ['train', 'val', 'test']:
+            img_dir = dataset_root_dir / split / 'images'
+            lbl_dir = dataset_root_dir / split / 'labels'
+            img_count = 0
+            if img_dir.exists():
+                img_count = len([f for f in img_dir.iterdir() if f.is_file()])
+                print(f"{split}/images のファイル数: {img_count}")
+                total_processed_images += img_count
+            else:
+                # testセットは存在しない場合があるので、警告ではなく情報として表示
+                if split == 'test' and test_split_ratio == 0:
+                    print(f"{split}/images ディレクトリは作成されませんでした (テストセットの割合が0のため)。")
+                else:
+                    print(f"警告: {split}/images ディレクトリが存在しません。")
+            
+            if lbl_dir.exists():
+                lbl_count = len([f for f in lbl_dir.iterdir() if f.is_file()])
+                print(f"{split}/labels のファイル数: {lbl_count}")
+            else:
+                if split == 'test' and test_split_ratio == 0:
+                     print(f"{split}/labels ディレクトリは作成されませんでした (テストセットの割合が0のため)。")
+                else:
+                    print(f"警告: {split}/labels ディレクトリが存在しません。")
+        
+        print(f"\n処理後の合計画像ファイル数 (train + val + test): {total_processed_images}")
+
+        print("\n期待されるファイル分割数 (目安):")
+        if initial_image_count > 0:
+            expected_train = round(initial_image_count * train_split_ratio)
+            expected_val = round(initial_image_count * val_split_ratio)
+            expected_test = round(initial_image_count * test_split_ratio)
+            # ラベルファイルがない等の理由で実際のファイル数は少なくなる可能性があるため、合計がinitial_image_countと一致しない場合がある
+            # ここでは単純な比率での期待値を示す
+            print(f"  訓練セット (画像): 約 {expected_train}")
+            print(f"  検証セット (画像): 約 {expected_val}")
+            print(f"  テストセット (画像): 約 {expected_test}")
+            print(f"  期待される合計 (train+val+test): 約 {expected_train + expected_val + expected_test}")
+        else:
+            print("  元の画像ファイル数が0または不明なため、期待値は計算できません。")
+
+        print("\n注意:")
+        print("- 上記の期待値は、全ての画像に対応するラベルファイルが存在する場合の目安です。")
+        print("- ラベルファイルが見つからない画像は、そのペアがデータセットから除外されるため、実際のファイル数は期待値より少なくなることがあります。")
+        print("- 各セット (train, val, test) の画像ファイルが重複していないか、合計数が元の有効なペア数とおおよそ一致するかを確認してください。")
+        print("- もし train と test の両方に全ての（または大部分の）フレームが含まれているように見える場合、分割比率の設定や、スクリプトが意図せず複数回実行されていないか等を確認してください。")
