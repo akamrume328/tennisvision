@@ -152,7 +152,7 @@ def on_prev_image(event):
 
 if __name__ == '__main__':
     # --- 設定 ---
-    dataset_base_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/dataset")
+    dataset_base_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/datasets/tracking3") # データセットのベースパス
     split_type = 'train' # 'train', 'val', または 'test' を指定
     num_images_to_check = 10 # 確認する画像の枚数
 

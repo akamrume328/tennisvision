@@ -31,9 +31,47 @@ def load_raw_data(data_dir):
         os.makedirs(temp_frame_base_dir, exist_ok=True)
 
     # data_dir内のファイルリストを取得
-    files_in_data_dir = os.listdir(data_dir)
+    all_files_in_data_dir = os.listdir(data_dir)
+    
+    # 動画ファイルのみをリストアップ
+    video_files = [f for f in all_files_in_data_dir if f.endswith('.mp4')]
+    
+    if not video_files:
+        print("動画ファイルが見つかりません。")
+        # 動画以外のファイル（画像など）は引き続き処理対象とする
+        files_to_process = [f for f in all_files_in_data_dir if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    else:
+        print("処理する動画ファイルを選択してください:")
+        for i, video_file in enumerate(video_files):
+            print(f"{i + 1}: {video_file}")
+        print("0: すべての動画を処理する")
+        
+        selected_indices_str = input("処理したい動画の番号をカンマ区切りで入力してください (例: 1,3)。'0'ですべて選択: ")
+        
+        selected_videos = []
+        if selected_indices_str == '0':
+            selected_videos = video_files
+        else:
+            try:
+                selected_indices = [int(idx.strip()) - 1 for idx in selected_indices_str.split(',')]
+                for idx in selected_indices:
+                    if 0 <= idx < len(video_files):
+                        selected_videos.append(video_files[idx])
+                    else:
+                        print(f"無効な番号です: {idx + 1}")
+            except ValueError:
+                print("無効な入力です。動画は処理されません。")
+        
+        # 選択された動画と、画像ファイルを処理対象とする
+        image_files = [f for f in all_files_in_data_dir if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        files_to_process = selected_videos + image_files
+
+    if not files_to_process:
+        print("処理対象のファイルがありません。")
+        return [], temp_frame_base_dir
+
     print("Loading raw data...")
-    for filename in tqdm(files_in_data_dir, desc="Processing files in raw_data_dir"):
+    for filename in tqdm(files_to_process, desc="Processing files in raw_data_dir"):
         file_path = os.path.join(data_dir, filename)
         if filename.endswith('.mp4'):
             video_name = os.path.splitext(filename)[0]
@@ -87,10 +125,13 @@ def load_raw_data(data_dir):
             # ffmpeg実行後、フレームファイルを集める (この部分のtqdmは削除)
             extracted_frame_files = sorted([f for f in os.listdir(output_frame_dir) if f.lower().endswith('.png')])
             
-            if len(extracted_frame_files) > 0:
-                frames_to_add = extracted_frame_files[1:] 
-            else:
-                frames_to_add = []
+            # フレーム番号0から始まるため、最初のフレーム（frame_0000.png）を含めるように変更
+            # ただし、ffmpegの-start_number 0 の挙動と合わせるため、
+            # 実際にフレームが0から始まるか、1から始まるかを確認する必要がある。
+            # ここでは、ffmpegが frame_0000.png から出力すると仮定し、全て含める。
+            # もし frame_0001.png から始まる場合は extracted_frame_files[0:] で良い。
+            # もし最初のフレームを除外したい意図が元々あったなら frames_to_add = extracted_frame_files[1:] のまま
+            frames_to_add = extracted_frame_files # 全ての抽出フレームを追加
 
             for frame_filename in frames_to_add: 
                 raw_data.append(os.path.join(output_frame_dir, frame_filename))
@@ -163,6 +204,6 @@ def main(raw_data_dir, processed_data_dir):
             print(f"Error deleting temporary directory {temp_dir_to_delete}: {e.strerror}")
 
 if __name__ == "__main__":
-    raw_data_directory = '../data/raw'  # 必要に応じてパスを調整
+    raw_data_directory = "../data/raw"  # 必要に応じてパスを調整
     processed_data_directory = '../data/processed/dataset/images'  # 保存先を images サブディレクトリに変更
     main(raw_data_directory, processed_data_directory)

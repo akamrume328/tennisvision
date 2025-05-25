@@ -11,7 +11,7 @@ from ultralytics import YOLO
 # ★★★ `train: path/to/train.txt` や `val: path/to/val.txt` のように、
 # ★★★ 訓練用/検証用テキストファイルへのパス（通常はdata.yamlからの相対パス）を定義している必要があります。
 # ★★★ `train.txt` や `val.txt` は、画像ファイルへのパスのリスト（例: `images/train/frame_000001.png` や `../images/frame_000001.png`）を含みます。
-dataset_yaml_path = '../data/processed/dataset/data.yaml'  # ★★★ ここをあなたのdata.yamlへの実際のパスに修正してください ★★★
+dataset_yaml_path = '../data/processed/datasets/tracking3/data.yaml'  # ★★★ ここをあなたのdata.yamlへの実際のパスに修正してください ★★★
 
 # トレーニング結果（重み、ログなど）を保存するディレクトリ
 # 例: 'C:/Users/YourUser/YOLOv8_Tennis_Project_Outputs'
@@ -42,19 +42,20 @@ local_extract_to_dir = 'temp_extracted_datasets' # ★★★ 必要であれば�
 
 # --- モデルとトレーニングパラメータ ---
 # 事前学習済みモデル名: 'yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt' など
+# または、ファインチューニング済みの .pt ファイルへのパス。
 # 新規トレーニングの場合にロードするモデル。checkpoint_to_resume が指定されていればそちらが優先されます。
-base_model_name_if_new = 'yolov8s.pt'
+base_model_name_if_new = '../models/weights/best_5_24.pt' # ★★★ 'path/to/your/custom_model.pt' のようにファイルパスも指定可能 ★★★
 
 num_epochs = 100  # トレーニングエポック数
-batch_size = 6   # バッチサイズ (GPUメモリに応じて調整)
-img_size = 1920    # 入力画像サイズ (例: 640, 1280)
+batch_size = 4   # バッチサイズ (RTX 4060の場合、img_size=1920では6は大きすぎる可能性あり。2や4を試してください)
+img_size = 1920    # 入力画像サイズ (例: 640, 1280)。1920はVRAMを多く消費します。RTX 4060では1280や640も検討してください。
 
 # その他のYOLOv8 train()メソッドのパラメータ (必要に応じてコメントアウト解除して設定)
-# device_setting = 0  # 0 for CUDA device 0, 'cpu' for CPU. YOLOv8が自動検出することも多い
-# workers_setting = 8 # データローダーのワーカー数 (CPUコア数に応じて調整)
+device_setting = 0  # 0 for CUDA device 0, 'cpu' for CPU. RTX 4060の場合は 0 を推奨
+workers_setting = 8 # データローダーのワーカー数 (CPUコア数に応じて調整。RTX 4060環境では4～8程度を推奨)
 # patience_setting = 30 # 早期終了の忍耐エポック数
 # lr0_setting = 0.01    # 初期学習率
-# optimizer_setting = 'AdamW' # オプティマイザ: 'SGD', 'Adam', 'AdamW'
+# optimizer_setting = 'AdamW' # オプティマイザ: 'SGD', 'Adam', 'AdamW' (AdamWが一般的によい)
 
 # --- ★★★ 設定項目終了 ★★★ ---
 
@@ -116,7 +117,7 @@ def train_yolo_model(
     output_dir,
     exp_name,
     resume_chkpt,
-    base_model_name,
+    base_model_name, # この引数は base_model_name_if_new の値を受け取る
     epochs,
     batch,
     imgsz,
@@ -137,17 +138,32 @@ def train_yolo_model(
         print("パスを再確認してください。ZIP展開機能を使用した場合は、展開後のローカルパスを指定しているか確認してください。")
         return
 
-    model_to_load = base_model_name
-    if resume_chkpt and os.path.exists(resume_chkpt):
-        print(f"チェックポイントからトレーニングを再開します: {resume_chkpt}")
-        model_to_load = resume_chkpt
-    elif resume_chkpt: # パスは指定されたが見つからなかった場合
-        print(f"警告: 指定された再開用チェックポイント '{resume_chkpt}' が見つかりませんでした。")
-        print(f"新しい事前学習済みモデル ({base_model_name}) からトレーニングを開始します。")
-    else:
-        print(f"新しい事前学習済みモデル ({base_model_name}) からトレーニングを開始します。")
+    model_path_to_load = base_model_name # デフォルトは base_model_name (新規またはカスタムベース)
 
-    model = YOLO(model_to_load)
+    if resume_chkpt:
+        if os.path.exists(resume_chkpt):
+            print(f"チェックポイントからトレーニングを再開します: {resume_chkpt}")
+            model_path_to_load = resume_chkpt
+        else:
+            print(f"警告: 指定された再開用チェックポイント '{resume_chkpt}' が見つかりませんでした。")
+            print(f"代わりに設定されたベースモデル '{base_model_name}' を使用しようとします。")
+            # model_path_to_load は base_model_name のまま
+    
+    # model_path_to_load が resume_chkpt でない場合 (つまり base_model_name を使う場合) のログ
+    if model_path_to_load == base_model_name: # resume しない、または resume に失敗した場合
+        if base_model_name.endswith('.pt'):
+            if os.path.exists(base_model_name):
+                print(f"指定されたファインチューニング済みモデルをベースとして使用します: {base_model_name}")
+            else:
+                # ユーザーが .pt を指定したがファイルが存在しない場合、YOLO() でエラーになる前に警告
+                print(f"警告: 指定されたベースモデルファイル '{base_model_name}' が見つかりません。")
+                print(f"YOLOがこのパス/名前を解決できない場合、トレーニングは失敗する可能性があります。")
+        else:
+            # 標準の事前学習済みモデル名の場合
+            print(f"事前学習済みモデル ({base_model_name}) からトレーニングを開始します。")
+    
+    print(f"YOLOモデルを初期化します。ロード対象: {model_path_to_load}")
+    model = YOLO(model_path_to_load)
 
     print(f"\nモデルのトレーニングを開始します。")
     print(f"エポック数: {epochs}, バッチサイズ: {batch}, 画像サイズ: {imgsz}")
@@ -203,9 +219,22 @@ if __name__ == "__main__":
     print(f"プロジェクト出力先: {project_output_dir}")
     print(f"実験名: {experiment_name}")
     print(f"再開用チェックポイント: {checkpoint_to_resume if checkpoint_to_resume else 'なし'}")
-    print(f"新規の場合のベースモデル: {base_model_name_if_new}")
+
+    if base_model_name_if_new.endswith('.pt'):
+        print(f"新規またはフォールバック時のカスタムベースモデル: {base_model_name_if_new}")
+        # 再開が指定されておらず、かつカスタムベースモデルファイルが存在しない場合に警告
+        if not checkpoint_to_resume and not os.path.exists(base_model_name_if_new):
+             print(f"警告: 指定されたカスタムベースモデルファイル '{base_model_name_if_new}' が見つかりません。")
+             print(f"      トレーニング開始時にエラーとなる可能性があります。パスを確認してください。")
+    else:
+        print(f"新規またはフォールバック時の標準ベースモデル: {base_model_name_if_new}")
+    
     print(f"エポック数: {num_epochs}, バッチサイズ: {batch_size}, 画像サイズ: {img_size}")
     print(f"チェックポイント保存頻度: {save_every_n_epochs} エポックごと")
+    if device_setting is not None:
+        print(f"使用デバイス: {device_setting}")
+    if workers_setting is not None:
+        print(f"データローダーワーカー数: {workers_setting}")
 
     actual_dataset_yaml_path = dataset_yaml_path
 
@@ -228,17 +257,17 @@ if __name__ == "__main__":
     
     # その他のYOLO trainパラメータを辞書として準備
     additional_train_params = {}
-    # if 'device_setting' in locals() and device_setting is not None:
-    #     additional_train_params['device'] = device_setting
-    # if 'workers_setting' in locals() and workers_setting is not None:
-    #     additional_train_params['workers'] = workers_setting
-    # if 'patience_setting' in locals() and patience_setting is not None:
-    #     additional_train_params['patience'] = patience_setting
-    # if 'lr0_setting' in locals() and lr0_setting is not None:
-    #     additional_train_params['lr0'] = lr0_setting
-    # if 'optimizer_setting' in locals() and optimizer_setting is not None:
-    #     additional_train_params['optimizer'] = optimizer_setting
-    # 例: additional_train_params['device'] = 'cpu' # CPUで実行する場合
+    if 'device_setting' in locals() and device_setting is not None:
+        additional_train_params['device'] = device_setting
+    if 'workers_setting' in locals() and workers_setting is not None:
+        additional_train_params['workers'] = workers_setting
+    if 'patience_setting' in locals() and patience_setting is not None:
+        additional_train_params['patience'] = patience_setting
+    if 'lr0_setting' in locals() and lr0_setting is not None:
+        additional_train_params['lr0'] = lr0_setting
+    if 'optimizer_setting' in locals() and optimizer_setting is not None:
+        additional_train_params['optimizer'] = optimizer_setting
+    # 例: additional_train_params['amp'] = False # 混合精度学習を無効化する場合 (通常はTrueが推奨)
 
     print(f"\n--- トレーニング開始 (使用するYAML: {actual_dataset_yaml_path}) ---")
     train_yolo_model(
