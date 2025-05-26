@@ -1,6 +1,5 @@
 import os
 import shutil
-import cv2
 from tqdm import tqdm
 
 # _collect_files_from_dataset は内部ヘルパー関数として残ります
@@ -35,40 +34,39 @@ def _collect_files_from_dataset(images_dir, labels_dir, dataset_name_prefix, spl
                 collected_items.append((image_path, None))
     return collected_items
 
-def _perform_merge_for_split(src_dataset1_images_dir, src_dataset1_labels_dir,
-                             src_dataset2_images_dir, src_dataset2_labels_dir,
-                             dest_merged_images_dir, dest_merged_labels_dir, split_name):
+def _perform_merge_for_split_multiple(datasets, dest_merged_images_dir, dest_merged_labels_dir, split_name):
     """
-    特定のスプリットについて、2つのデータセットを1つに融合する。
+    複数のデータセットを1つに融合する（特定スプリット用）。
+    datasets は (images_dir, labels_dir, dataset_name_prefix) のタプルを要素としたリストを想定。
     """
-    # 出力ディレクトリの作成
+    # 出力ディレクトリ作成
     for dir_path in [dest_merged_images_dir, dest_merged_labels_dir]:
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
             print(f"作成されたディレクトリ ({split_name}): {dir_path}")
 
     items_to_merge = []
-    items_to_merge.extend(_collect_files_from_dataset(src_dataset1_images_dir, src_dataset1_labels_dir, "データセット1", split_name))
-    items_to_merge.extend(_collect_files_from_dataset(src_dataset2_images_dir, src_dataset2_labels_dir, "データセット2", split_name))
+    for images_dir, labels_dir, dataset_name_prefix in datasets:
+        items_to_merge.extend(_collect_files_from_dataset(images_dir, labels_dir, dataset_name_prefix, split_name))
 
     if not items_to_merge:
-        print(f"スプリット '{split_name}' で融合するアイテム（画像/ラベル）が見つかりませんでした。")
+        print(f"スプリット '{split_name}' で融合するアイテムがありません。")
         return
 
     print(f"スプリット '{split_name}': 合計 {len(items_to_merge)} 個のアイテムを融合します。")
-
-    saved_item_count = 0 # スプリットごとにカウンターをリセット
+    saved_item_count = 0
     for i, (image_path, label_path) in enumerate(tqdm(items_to_merge, desc=f"Merging {split_name} datasets", leave=False)):
         try:
-            img = cv2.imread(image_path)
-            if img is None:
-                print(f"警告 ({split_name}): 画像を読み込めませんでした: {image_path}")
+            if not os.path.exists(image_path):
+                print(f"警告 ({split_name}): 画像ファイルが見つかりません: {image_path}")
                 continue
             
+            # 元の拡張子を保持
+            _, original_ext = os.path.splitext(image_path)
             new_base_filename = f'frame_{saved_item_count:06d}'
             
-            image_save_path = os.path.join(dest_merged_images_dir, new_base_filename + '.png')
-            cv2.imwrite(image_save_path, img)
+            image_save_path = os.path.join(dest_merged_images_dir, new_base_filename + original_ext)
+            shutil.copy2(image_path, image_save_path)
 
             if label_path:
                 label_save_path = os.path.join(dest_merged_labels_dir, new_base_filename + '.txt')
@@ -82,52 +80,78 @@ def _perform_merge_for_split(src_dataset1_images_dir, src_dataset1_labels_dir,
     print(f"  画像保存先: {dest_merged_images_dir}")
     print(f"  ラベル保存先: {dest_merged_labels_dir}")
 
-def merge_datasets_with_splits(dataset1_base_dir, dataset2_base_dir, merged_base_dir, splits=["train", "test", "val"]):
+def merge_datasets_with_splits_multiple(datasets, merged_base_dir, splits=["train", "test", "val"]):
     """
-    指定されたスプリット（train, test, valなど）ごとにデータセットを融合する。
+    複数のデータセットを指定されたスプリットごとに融合する。
+    datasets は (base_dir, dataset_name_prefix) のタプルを要素としたリストを想定。
     """
-    # _collect_files_from_dataset の警告セットをリセット（実行ごとにクリアするため）
+    # _collect_files_from_dataset の警告セットリセット
     if hasattr(_collect_files_from_dataset, 'warned_missing_label_dirs'):
         del _collect_files_from_dataset.warned_missing_label_dirs
 
     for split in splits:
-        print(f"\n--- スプリット '{split}' の処理を開始 ---")
+        print(f"\n--- スプリット '{split}' のマルチデータセット処理を開始 ---")
+        merge_targets = []
+        for base_dir, dataset_prefix in datasets:
+            img_dir = os.path.join(base_dir, split, 'images')
+            lbl_dir = os.path.join(base_dir, split, 'labels')
+            merge_targets.append((img_dir, lbl_dir, dataset_prefix))
 
-        d1_images_dir = os.path.join(dataset1_base_dir, split, 'images')
-        d1_labels_dir = os.path.join(dataset1_base_dir, split, 'labels')
-        d2_images_dir = os.path.join(dataset2_base_dir, split, 'images')
-        d2_labels_dir = os.path.join(dataset2_base_dir, split, 'labels')
-        
         merged_images_dir = os.path.join(merged_base_dir, split, 'images')
         merged_labels_dir = os.path.join(merged_base_dir, split, 'labels')
+        _perform_merge_for_split_multiple(merge_targets, merged_images_dir, merged_labels_dir, split)
+        print(f"--- スプリット '{split}' の処理完了 ---")
 
-        _perform_merge_for_split(
-            d1_images_dir, d1_labels_dir,
-            d2_images_dir, d2_labels_dir,
-            merged_images_dir, merged_labels_dir,
-            split_name=split
-        )
-        print(f"--- スプリット '{split}' の処理が完了 ---")
+def create_data_yaml(merged_base_dir, splits=["train", "test", "val"]):
+    """
+    YOLOv8用のdata.yamlファイルを作成する
+    """
+    yaml_content = """# YOLOv8 dataset configuration for tennis ball detection
+
+# Dataset paths
+train: /content/datasets/train/images
+val: /content/datasets/val/images
+test: /content/datasets/test/images
+
+names: {0: player_front, 1: player_back, 2: tennis_ball}
+path: .
+
+"""
+    
+    yaml_path = os.path.join(merged_base_dir, 'data.yaml')
+    try:
+        with open(yaml_path, 'w', encoding='utf-8') as f:
+            f.write(yaml_content)
+        print(f"data.yamlファイルを作成しました: {yaml_path}")
+    except Exception as e:
+        print(f"data.yamlファイルの作成に失敗しました: {e}")
 
 if __name__ == "__main__":
     # --- 設定項目 ---
-    # 1つ目のデータセットのベースパス
-    dataset1_base_path = '../data/processed/datasets/tracking3' 
-    # 2つ目のデータセットのベースパス
-    dataset2_base_path = '../data/processed/datasets/merged_dataset_split' 
-    # 融合後のデータセットの保存先ベースパス
-    merged_dataset_base_path = '../data/processed/datasets/merged_dataset_split' # 新しい出力先名
+    # 融合するデータセットのリスト (ベースパス, 識別名)
+    datasets_to_merge = [
+        ("../data/processed/datasets/tracking3", "tracking2"),
+        ("../data/processed/datasets/tracking1", "tracking1"),
+        ("../data/processed/datasets/tracking4", "tracking4"),
+
+        # 必要に応じて追加
+        # ("../data/processed/datasets/another_dataset", "AnotherDataset"),
+    ]
     
-    # 処理するスプリットのリスト
-    # 必要に応じて変更してください (例: ["train", "val"] のみなど)
+    # 融合後のデータセットの保存先
+    merged_dataset_base_path = '../data/processed/datasets/final_merged_dataset'
+    
+    # 処理するスプリット
     target_splits = ["train", "test", "val"] 
     # --- 設定項目ここまで ---
 
-    # ディレクトリパスは実際の環境に合わせて変更してください
-    # 例:
-    # dataset1_base_path = 'C:/path/to/your/first_dataset_base'
-    # dataset2_base_path = 'C:/path/to/your/second_dataset_base'
-    # merged_dataset_base_path = 'C:/path/to/your/merged_dataset_base'
-
-    merge_datasets_with_splits(dataset1_base_path, dataset2_base_path, 
-                               merged_dataset_base_path, splits=target_splits)
+    if not datasets_to_merge:
+        print("エラー: 融合するデータセットが指定されていません。")
+    else:
+        merge_datasets_with_splits_multiple(datasets_to_merge, merged_dataset_base_path, splits=target_splits)
+        
+        # data.yamlファイルを作成
+        create_data_yaml(merged_dataset_base_path, splits=target_splits)
+        
+        print(f"\n=== 全ての処理が完了しました ===")
+        print(f"融合データセット保存先: {merged_dataset_base_path}")

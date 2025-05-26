@@ -137,7 +137,7 @@ if __name__ == "__main__":
     # --- 設定 ---
     # 'data.yaml' が配置されるディレクトリ (通常は dataset/)
     # このディレクトリ内に元の images/ および labels/ ディレクトリがあると仮定
-    dataset_root_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/datasets/tracking3")
+    dataset_root_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/datasets/tracking4")
     
     # 分割比率 (train_ratio + val_ratio <= 1.0 であること)
     # 残りが test_ratio となります。
