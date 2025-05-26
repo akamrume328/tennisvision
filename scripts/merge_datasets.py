@@ -141,7 +141,7 @@ path: .
     except Exception as e:
         print(f"data.yamlファイルの作成に失敗しました: {e}")
 
-def create_colab_data_yaml(merged_base_dir, mount_point="/content/gcs", dataset_subpath="datasets"):
+def create_colab_data_yaml(merged_base_dir, mount_point="/content/gcs", dataset_subpath="final_merged_dataset"):
     """
     Google Colab + gcsfuse用の絶対パス指定data.yamlファイルを作成する
     """
