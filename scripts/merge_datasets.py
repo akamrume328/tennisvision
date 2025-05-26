@@ -104,10 +104,10 @@ def merge_datasets_with_splits_multiple(datasets, merged_base_dir, splits=["trai
 
 def create_data_yaml(merged_base_dir, splits=["train", "test", "val"]):
     """
-    YOLOv8用のdata.yamlファイルを作成する（gcsfuseマウント対応）
+    YOLOv8用のdata.yamlファイルを作成する（Google Driveマウント対応）
     """
     yaml_content = """# YOLOv8 dataset configuration for tennis ball detection
-# This configuration is designed for use with gcsfuse mounted GCS buckets
+# This configuration is designed for use with Google Drive mounted directories
 
 # Dataset paths - relative to this data.yaml file
 # These paths assume the data.yaml is located in the root of the mounted dataset
@@ -133,24 +133,24 @@ path: .
             f.write(yaml_content)
         print(f"data.yamlファイルを作成しました: {yaml_path}")
         print("注意: このdata.yamlは相対パスを使用しています。")
-        print("GCSにアップロード後、gcsfuseでマウントして使用してください。")
-        print("例: /content/gcs/datasets/data.yaml として配置した場合、")
-        print("     train/images -> /content/gcs/datasets/train/images")
-        print("     val/images   -> /content/gcs/datasets/val/images")
-        print("     test/images  -> /content/gcs/datasets/test/images")
+        print("Google Driveにアップロード後、Colabでマウントして使用してください。")
+        print("例: /content/drive/MyDrive/datasets/data.yaml として配置した場合、")
+        print("     train/images -> /content/drive/MyDrive/datasets/train/images")
+        print("     val/images   -> /content/drive/MyDrive/datasets/val/images")
+        print("     test/images  -> /content/drive/MyDrive/datasets/test/images")
     except Exception as e:
         print(f"data.yamlファイルの作成に失敗しました: {e}")
 
-def create_colab_data_yaml(merged_base_dir, mount_point="/content/gcs", dataset_subpath="final_merged_dataset"):
+def create_colab_data_yaml(merged_base_dir, mount_point="/content/drive/MyDrive", dataset_subpath="datasets/final_merged_dataset"):
     """
-    Google Colab + gcsfuse用の絶対パス指定data.yamlファイルを作成する
+    Google Colab + Google Drive用の絶対パス指定data.yamlファイルを作成する
     """
     dataset_base_path = f"{mount_point}/{dataset_subpath}"
     
     yaml_content = f"""# YOLOv8 dataset configuration for tennis ball detection
-# Google Colab + gcsfuse specific configuration
+# Google Colab + Google Drive specific configuration
 
-# Dataset paths - absolute paths for gcsfuse mounted directories
+# Dataset paths - absolute paths for Google Drive mounted directories
 train: {dataset_base_path}/train/images
 val: {dataset_base_path}/val/images
 test: {dataset_base_path}/test/images
@@ -172,7 +172,7 @@ path: {dataset_base_path}
         with open(yaml_path, 'w', encoding='utf-8') as f:
             f.write(yaml_content)
         print(f"Colab用data.yamlファイルを作成しました: {yaml_path}")
-        print(f"このファイルは以下のマウント構成を想定しています:")
+        print(f"このファイルは以下のGoogle Drive構成を想定しています:")
         print(f"  マウントポイント: {mount_point}")
         print(f"  データセットサブパス: {dataset_subpath}")
         print(f"  最終的なデータセットパス: {dataset_base_path}")
@@ -206,10 +206,10 @@ if __name__ == "__main__":
         
         # 相対パス版とColab絶対パス版の両方のdata.yamlファイルを作成
         create_data_yaml(merged_dataset_base_path, splits=target_splits)
-        create_colab_data_yaml(merged_dataset_base_path, mount_point="/content/gcs", dataset_subpath="datasets")
+        create_colab_data_yaml(merged_dataset_base_path, mount_point="/content/drive/MyDrive", dataset_subpath="datasets/final_merged_dataset")
         
         print(f"\n=== 全ての処理が完了しました ===")
         print(f"融合データセット保存先: {merged_dataset_base_path}")
         print(f"作成されたファイル:")
-        print(f"  - data.yaml (相対パス版): GCSアップロード用")
+        print(f"  - data.yaml (相対パス版): Google Driveアップロード用")
         print(f"  - data_colab.yaml (絶対パス版): Colab実行時の参考用")
