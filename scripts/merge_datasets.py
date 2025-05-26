@@ -104,16 +104,25 @@ def merge_datasets_with_splits_multiple(datasets, merged_base_dir, splits=["trai
 
 def create_data_yaml(merged_base_dir, splits=["train", "test", "val"]):
     """
-    YOLOv8用のdata.yamlファイルを作成する
+    YOLOv8用のdata.yamlファイルを作成する（gcsfuseマウント対応）
     """
     yaml_content = """# YOLOv8 dataset configuration for tennis ball detection
+# This configuration is designed for use with gcsfuse mounted GCS buckets
 
-# Dataset paths
-train: /content/datasets/train/images
-val: /content/datasets/val/images
-test: /content/datasets/test/images
+# Dataset paths - relative to this data.yaml file
+# These paths assume the data.yaml is located in the root of the mounted dataset
+train: train/images
+val: val/images
+test: test/images
 
-names: {0: player_front, 1: player_back, 2: tennis_ball}
+# Class configuration
+nc: 3  # number of classes
+names: 
+  0: player_front
+  1: player_back
+  2: tennis_ball
+
+# Optional: dataset root path (relative to data.yaml location)
 path: .
 
 """
@@ -123,16 +132,61 @@ path: .
         with open(yaml_path, 'w', encoding='utf-8') as f:
             f.write(yaml_content)
         print(f"data.yamlファイルを作成しました: {yaml_path}")
+        print("注意: このdata.yamlは相対パスを使用しています。")
+        print("GCSにアップロード後、gcsfuseでマウントして使用してください。")
+        print("例: /content/gcs/datasets/data.yaml として配置した場合、")
+        print("     train/images -> /content/gcs/datasets/train/images")
+        print("     val/images   -> /content/gcs/datasets/val/images")
+        print("     test/images  -> /content/gcs/datasets/test/images")
     except Exception as e:
         print(f"data.yamlファイルの作成に失敗しました: {e}")
+
+def create_colab_data_yaml(merged_base_dir, mount_point="/content/gcs", dataset_subpath="datasets"):
+    """
+    Google Colab + gcsfuse用の絶対パス指定data.yamlファイルを作成する
+    """
+    dataset_base_path = f"{mount_point}/{dataset_subpath}"
+    
+    yaml_content = f"""# YOLOv8 dataset configuration for tennis ball detection
+# Google Colab + gcsfuse specific configuration
+
+# Dataset paths - absolute paths for gcsfuse mounted directories
+train: {dataset_base_path}/train/images
+val: {dataset_base_path}/val/images
+test: {dataset_base_path}/test/images
+
+# Class configuration
+nc: 3  # number of classes
+names: 
+  0: player_front
+  1: player_back
+  2: tennis_ball
+
+# Dataset root path
+path: {dataset_base_path}
+
+"""
+    
+    yaml_path = os.path.join(merged_base_dir, 'data_colab.yaml')
+    try:
+        with open(yaml_path, 'w', encoding='utf-8') as f:
+            f.write(yaml_content)
+        print(f"Colab用data.yamlファイルを作成しました: {yaml_path}")
+        print(f"このファイルは以下のマウント構成を想定しています:")
+        print(f"  マウントポイント: {mount_point}")
+        print(f"  データセットサブパス: {dataset_subpath}")
+        print(f"  最終的なデータセットパス: {dataset_base_path}")
+    except Exception as e:
+        print(f"Colab用data.yamlファイルの作成に失敗しました: {e}")
 
 if __name__ == "__main__":
     # --- 設定項目 ---
     # 融合するデータセットのリスト (ベースパス, 識別名)
     datasets_to_merge = [
-        ("../data/processed/datasets/tracking3", "tracking2"),
+        ("../data/processed/datasets/tracking2", "tracking2"),
         ("../data/processed/datasets/tracking1", "tracking1"),
         ("../data/processed/datasets/tracking4", "tracking4"),
+        ("../data/processed/datasets/tracking3", "tracking3"),
 
         # 必要に応じて追加
         # ("../data/processed/datasets/another_dataset", "AnotherDataset"),
@@ -150,8 +204,12 @@ if __name__ == "__main__":
     else:
         merge_datasets_with_splits_multiple(datasets_to_merge, merged_dataset_base_path, splits=target_splits)
         
-        # data.yamlファイルを作成
+        # 相対パス版とColab絶対パス版の両方のdata.yamlファイルを作成
         create_data_yaml(merged_dataset_base_path, splits=target_splits)
+        create_colab_data_yaml(merged_dataset_base_path, mount_point="/content/gcs", dataset_subpath="datasets")
         
         print(f"\n=== 全ての処理が完了しました ===")
         print(f"融合データセット保存先: {merged_dataset_base_path}")
+        print(f"作成されたファイル:")
+        print(f"  - data.yaml (相対パス版): GCSアップロード用")
+        print(f"  - data_colab.yaml (絶対パス版): Colab実行時の参考用")
