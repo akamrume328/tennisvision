@@ -1,0 +1,9 @@
+=== YOLOv8 モデル評価レポート ===
+
+モデルパス: C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_25.pt
+mAP50: 0.7760
+mAP50-95: 0.6603
+Precision: 0.9318
+Recall: 0.7644
+
+詳細結果は evaluation_results の画像ファイルを確認してください。

@@ -52,6 +52,20 @@ img_size = 1920    # 入力画像サイズ (例: 640, 1280)。1920はVRAMを多�
 
 # その他のYOLOv8 train()メソッドのパラメータ (必要に応じてコメントアウト解除して設定)
 device_setting = 0  # 0 for CUDA device 0, 'cpu' for CPU. RTX 4060の場合は 0 を推奨
+# GPUが利用可能か確認 (PyTorchが必要)
+try:
+    import torch
+    if device_setting != 'cpu' and not torch.cuda.is_available():
+        print("警告: CUDAが利用できません。deviceを 'cpu' に設定します。")
+        device_setting = 'cpu'
+    elif device_setting != 'cpu' and torch.cuda.is_available():
+        print(f"CUDAが利用可能です。デバイス: {torch.cuda.get_device_name(device_setting if isinstance(device_setting, int) else 0)}")
+except ImportError:
+    print("警告: PyTorchがインストールされていません。GPUチェックはスキップされます。device設定に注意してください。")
+except Exception as e:
+    print(f"警告: GPUチェック中にエラーが発生しました: {e}。deviceを 'cpu' に設定します。")
+    device_setting = 'cpu'
+
 workers_setting = 8 # データローダーのワーカー数 (CPUコア数に応じて調整。RTX 4060環境では4～8程度を推奨)
 # patience_setting = 30 # 早期終了の忍耐エポック数
 # lr0_setting = 0.01    # 初期学習率
@@ -233,6 +247,16 @@ if __name__ == "__main__":
     print(f"チェックポイント保存頻度: {save_every_n_epochs} エポックごと")
     if device_setting is not None:
         print(f"使用デバイス: {device_setting}")
+        # GPUチェックの結果を再度表示（初期設定後にもし変更があった場合のため）
+        if device_setting != 'cpu':
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    print("  (ただし、CUDAが利用できないため、実際にはCPUが使用される可能性があります。)")
+                else:
+                    print(f"  (CUDAデバイス名: {torch.cuda.get_device_name(device_setting if isinstance(device_setting, int) else 0)})")
+            except Exception:
+                pass # 初期チェックでエラーが出ていればここでは何もしない
     if workers_setting is not None:
         print(f"データローダーワーカー数: {workers_setting}")
 

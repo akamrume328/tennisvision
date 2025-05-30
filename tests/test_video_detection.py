@@ -5,10 +5,27 @@ import sys
 from ultralytics import YOLO
 from tqdm import tqdm # tqdm をインポート
 import numpy as np # numpy をインポート
+import torch # torch をインポート
 
 # モデルのロード (グローバル)
-MODEL_PATH = r"C:\\Users\\akama\\AppData\\Local\\Programs\\Python\\Python310\\python_file\\projects\\tennisvision\\models\\weights\\best_5_25.pt"
+MODEL_PATH = r"C:\\Users\\akama\\AppData\\Local\\Programs\\Python\\Python310\\python_file\\projects\\tennisvision\\models\\weights\\last.pt"
+
+# デバイスの選択 (CUDAが利用可能ならGPU、そうでなければCPU)
+if torch.cuda.is_available():
+    device = 'cuda'
+    print("CUDA (GPU) が利用可能です。GPUを使用します。")
+    # 追加のGPU情報（オプション）
+    print(f"使用するGPU: {torch.cuda.get_device_name(0)}")
+else:
+    device = 'cpu'
+    print("CUDA (GPU) が利用できません。CPUを使用します。")
+    print("GPUを使用するには、NVIDIAドライバ、CUDA Toolkit、cuDNNが正しくインストールされ、PyTorchがCUDA対応でビルドされていることを確認してください。")
+
 model = YOLO(MODEL_PATH)
+model.to(device) # モデルを適切なデバイスに移動
+# model.fuse() # オプション: モデルのレイヤーを融合して推論を高速化 (GPUでの効果が大きい場合がある)
+print(f"YOLO モデルはデバイス '{str(model.device)}' で初期化されました。") # model.device は torch.device オブジェクトなので、str()で文字列に変換
+
 IMG_SIZE = 1920 # ★★★ 推論時の入力画像サイズを指定 (例: 640, 1280, 1920) ★★★
 # CONF_THRESHOLD はモデル推論時に直接指定するため、ここでは不要
 
@@ -129,7 +146,7 @@ def initialize_resources(enable_tracking=True):
     # ファイル名サフィックスをトラッキングの有無に応じて変更
     # enable_tracking はファイル名にのみ影響し、SimpleTracker は常に有効
     output_video_filename_suffix = "simple_tracked" if enable_tracking else "detected_only_placeholder" 
-    output_video_path = f"data/processed/output_1920_{output_video_filename_suffix}.mp4"
+    output_video_path = f"data/processed/output_1920_{output_video_filename_suffix}_{device}.mp4" # 出力ファイル名にデバイス情報を含める
     
     os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 
@@ -156,14 +173,17 @@ def detect_and_draw_on_video(video_path, output_video_path, current_tracker):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
 
+    print(f"推論実行デバイス (model.device): '{str(model.device)}'") # 推論実行前にモデルのデバイスを確認
+    print(f"推論時に指定するデバイス (device variable): '{device}'") # model()に渡すデバイス変数を確認
+
     with tqdm(total=total_frames, desc="動画処理中 (SimpleTracker)") as pbar:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # YOLOモデルで推論 (conf はここで指定)
-            results = model(frame, imgsz=IMG_SIZE, conf=0.25, verbose=False) # confを適切に設定
+            # YOLOモデルで推論 (conf はここで指定, deviceも指定)
+            results = model(frame, imgsz=IMG_SIZE, conf=0.25, verbose=False, device=device) # deviceを明示的に指定
 
             detections_for_tracker = []
             if results and results[0] and results[0].boxes is not None:
@@ -211,6 +231,11 @@ if __name__ == '__main__':
     print(f"推論時の入力画像サイズ (imgsz): {IMG_SIZE}")
     print(f"ファイル名にトラッキング情報を含む: {tracking_enabled_for_filename}")
     print(f"使用トラッカー: SimpleTracker (距離ベース)")
+    print(f"スクリプト開始時の期待される推論デバイス: {device}") # スクリプト開始時に決定されたデバイス
 
     video_path, output_video_path, tracker_instance = initialize_resources(enable_tracking=tracking_enabled_for_filename)
+    
+    # 推論実行直前のモデルのデバイスを再度確認
+    print(f"detect_and_draw_on_video 関数呼び出し直前のモデルのデバイス: '{str(model.device)}'")
+
     detect_and_draw_on_video(video_path, output_video_path, tracker_instance)
