@@ -183,3 +183,9 @@ models/
 data/
 
 *.csv
+
+*.json
+
+*.png
+
+*.jpg
