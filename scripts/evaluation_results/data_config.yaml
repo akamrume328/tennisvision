@@ -3,7 +3,7 @@ names:
   1: player_back
   2: tennis_ball
 nc: 3
-path: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennisvision\data\processed\datasets\tracking1
+path: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennisvision\data\processed\datasets\final_merged_dataset
 test: test/images
 train: train/images
 val: val/images

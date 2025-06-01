@@ -4,17 +4,31 @@ from ultralytics import YOLO
 import math
 from collections import deque
 from typing import List, Tuple, Optional
+import csv
+import os
+from datetime import datetime
+import json
+import glob
+from pathlib import Path
 
 class TennisBallTracker:
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, imgsz: int = 1920, save_training_data: bool = False):
         """
         テニスボールトラッカーの初期化
         
         Args:
             model_path: YOLOv8モデルのパス
+            imgsz: 推論時の画像サイズ（デフォルト: 640）
+            save_training_data: 学習用データを保存するかどうか
         """
         self.model = YOLO(model_path)
+        self.imgsz = imgsz  # 推論時の画像サイズ
         self.tennis_ball_class_id = 2  # tennis_ballのクラスID
+        self.player_front_class_id = 0  # player_frontのクラスID
+        self.player_back_class_id = 1   # player_backのクラスID
+        
+        # プレイヤー検出用の信頼度閾値
+        self.player_confidence_threshold = 0.3
         
         # トラッキング関連のパラメータ
         self.max_disappeared = 15  # ボールが見えなくなってから削除するまでのフレーム数（増加）
@@ -24,8 +38,8 @@ class TennisBallTracker:
         self.max_velocity_change = 80  # 最大速度変化（物理的制約）（増加）
         
         # 動的な検出閾値
-        self.base_confidence_threshold = 0.3  # 基本信頼度閾値（減少）
-        self.high_confidence_threshold = 0.5  # 高信頼度閾値
+        self.base_confidence_threshold = 0.2  # 基本信頼度閾値（減少）
+        self.high_confidence_threshold = 0.4  # 高信頼度閾値
         
         # 現在追跡中のボール
         self.active_ball = None
@@ -35,6 +49,20 @@ class TennisBallTracker:
         # 候補ボールの管理
         self.candidate_balls = {}  # ID: {position_history, last_seen, movement_score, predicted_pos}
         self.next_id = 0
+        
+        # 時系列データ記録用
+        self.time_series_data = []
+        self.frame_number = 0
+        self.start_time = datetime.now()
+        
+        # 学習用データ保存関連
+        self.save_training_data = save_training_data
+        self.training_features = []  # 学習用特徴量データ
+        self.training_data_dir = Path("training_data")
+        
+        if self.save_training_data:
+            self.training_data_dir.mkdir(exist_ok=True)
+            print(f"学習用データを保存します: {self.training_data_dir}")
     
     def calculate_distance(self, point1: Tuple[int, int], point2: Tuple[int, int]) -> float:
         """2点間の距離を計算"""
@@ -186,28 +214,484 @@ class TennisBallTracker:
         
         return best_ball_id
     
+    def record_frame_data(self, detections: List[Tuple[int, int, float]], 
+                         player_detections: List[Tuple[int, int, int, int, int, float]]) -> dict:
+        """フレームごとのデータを記録"""
+        self.frame_number += 1
+        current_time = datetime.now()
+        
+        # 基本情報
+        frame_data = {
+            'frame_number': self.frame_number,
+            'timestamp': current_time.isoformat(),
+            'elapsed_time_seconds': (current_time - self.start_time).total_seconds(),
+            'detections_count': len(detections),
+            'candidate_balls_count': len(self.candidate_balls),
+            'active_ball_id': self.active_ball,
+            'disappeared_count': self.disappeared_count,
+            'trajectory_length': len(self.ball_trajectory)
+        }
+        
+        # アクティブボール情報
+        if self.active_ball is not None and self.active_ball in self.candidate_balls:
+            ball_info = self.candidate_balls[self.active_ball]
+            if len(ball_info['position_history']) > 0:
+                current_pos = ball_info['position_history'][-1]
+                frame_data.update({
+                    'ball_x': current_pos[0],
+                    'ball_y': current_pos[1],
+                    'ball_movement_score': ball_info['movement_score'],
+                    'ball_last_seen': ball_info['last_seen'],
+                    'ball_tracking_status': 'tracking' if ball_info['last_seen'] == 0 else 'predicting'
+                })
+                
+                # 速度情報
+                if len(ball_info['position_history']) >= 2:
+                    velocity = self.calculate_velocity(list(ball_info['position_history']))
+                    frame_data.update({
+                        'ball_velocity_x': velocity[0],
+                        'ball_velocity_y': velocity[1],
+                        'ball_speed': math.sqrt(velocity[0]**2 + velocity[1]**2)
+                    })
+                else:
+                    frame_data.update({
+                        'ball_velocity_x': 0,
+                        'ball_velocity_y': 0,
+                        'ball_speed': 0
+                    })
+                
+                # 予測位置
+                predicted_pos = self.predict_next_position(list(ball_info['position_history']))
+                if predicted_pos:
+                    frame_data.update({
+                        'predicted_x': predicted_pos[0],
+                        'predicted_y': predicted_pos[1]
+                    })
+                else:
+                    frame_data.update({
+                        'predicted_x': None,
+                        'predicted_y': None
+                    })
+            else:
+                frame_data.update({
+                    'ball_x': None, 'ball_y': None, 'ball_movement_score': 0,
+                    'ball_last_seen': 0, 'ball_tracking_status': 'none',
+                    'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                    'predicted_x': None, 'predicted_y': None
+                })
+        else:
+            frame_data.update({
+                'ball_x': None, 'ball_y': None, 'ball_movement_score': 0,
+                'ball_last_seen': 0, 'ball_tracking_status': 'none',
+                'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                'predicted_x': None, 'predicted_y': None
+            })
+        
+        # プレイヤー情報
+        frame_data['players_detected'] = len(player_detections)
+        player_front_count = sum(1 for _, _, _, _, class_id, _ in player_detections if class_id == self.player_front_class_id)
+        player_back_count = sum(1 for _, _, _, _, class_id, _ in player_detections if class_id == self.player_back_class_id)
+        frame_data.update({
+            'player_front_count': player_front_count,
+            'player_back_count': player_back_count
+        })
+        
+        # 最高信頼度の検出情報
+        if detections:
+            best_detection = max(detections, key=lambda x: x[2])
+            frame_data.update({
+                'best_detection_x': best_detection[0],
+                'best_detection_y': best_detection[1],
+                'best_detection_confidence': best_detection[2]
+            })
+        else:
+            frame_data.update({
+                'best_detection_x': None,
+                'best_detection_y': None,
+                'best_detection_confidence': None
+            })
+        
+        # 動的閾値情報
+        frame_data['confidence_threshold'] = self.get_dynamic_confidence_threshold()
+        
+        # 候補ボールの詳細情報（最大3つまで）
+        sorted_candidates = sorted(
+            self.candidate_balls.items(),
+            key=lambda x: x[1]['movement_score'],
+            reverse=True
+        )
+        
+        for i in range(min(3, len(sorted_candidates))):
+            ball_id, ball_info = sorted_candidates[i]
+            prefix = f'candidate_{i+1}_'
+            if len(ball_info['position_history']) > 0:
+                pos = ball_info['position_history'][-1]
+                frame_data.update({
+                    f'{prefix}id': ball_id,
+                    f'{prefix}x': pos[0],
+                    f'{prefix}y': pos[1],
+                    f'{prefix}movement_score': ball_info['movement_score'],
+                    f'{prefix}last_seen': ball_info['last_seen']
+                })
+            else:
+                frame_data.update({
+                    f'{prefix}id': None,
+                    f'{prefix}x': None,
+                    f'{prefix}y': None,
+                    f'{prefix}movement_score': 0,
+                    f'{prefix}last_seen': 0
+                })
+        
+        # 足りない候補ボール情報を埋める
+        for i in range(len(sorted_candidates), 3):
+            prefix = f'candidate_{i+1}_'
+            frame_data.update({
+                f'{prefix}id': None,
+                f'{prefix}x': None,
+                f'{prefix}y': None,
+                f'{prefix}movement_score': 0,
+                f'{prefix}last_seen': 0
+            })
+        
+        self.time_series_data.append(frame_data)
+        return frame_data
+    
+    def save_time_series_data(self, output_path: str):
+        """時系列データをCSVファイルに保存"""
+        if not self.time_series_data:
+            print("保存するデータがありません")
+            return
+        
+        # ディレクトリが存在しない場合は作成
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = self.time_series_data[0].keys()
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            writer.writerows(self.time_series_data)
+        
+        print(f"時系列データを保存しました: {output_path}")
+        print(f"総フレーム数: {len(self.time_series_data)}")
+    
+    def extract_training_features(self, player_detections: List[Tuple[int, int, int, int, int, float]], 
+                                 court_coordinates: dict = None) -> dict:
+        """学習用の包括的な特徴量を抽出"""
+        features = {
+            'timestamp': datetime.now().isoformat(),
+            'frame_number': self.frame_number
+        }
+        
+        # ボール位置特徴量
+        if self.active_ball is not None and self.active_ball in self.candidate_balls:
+            ball_info = self.candidate_balls[self.active_ball]
+            if len(ball_info['position_history']) > 0:
+                pos = ball_info['position_history'][-1]
+                features.update({
+                    'ball_x': pos[0],
+                    'ball_y': pos[1],
+                    'ball_x_normalized': pos[0] / 1920.0,
+                    'ball_y_normalized': pos[1] / 1080.0,
+                    'ball_detected': 1,
+                    'ball_movement_score': ball_info['movement_score'],
+                    'ball_tracking_confidence': 1.0 if ball_info['last_seen'] == 0 else 0.5
+                })
+                
+                # ボール速度
+                if len(ball_info['position_history']) >= 2:
+                    velocity = self.calculate_velocity(list(ball_info['position_history']))
+                    features.update({
+                        'ball_velocity_x': velocity[0],
+                        'ball_velocity_y': velocity[1],
+                        'ball_speed': math.sqrt(velocity[0]**2 + velocity[1]**2),
+                        'ball_velocity_x_normalized': velocity[0] / 100.0,
+                        'ball_velocity_y_normalized': velocity[1] / 100.0
+                    })
+                else:
+                    features.update({
+                        'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                        'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+                    })
+            else:
+                features.update({
+                    'ball_x': None, 'ball_y': None, 'ball_detected': 0,
+                    'ball_x_normalized': 0, 'ball_y_normalized': 0,
+                    'ball_movement_score': 0, 'ball_tracking_confidence': 0,
+                    'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                    'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+                })
+        else:
+            features.update({
+                'ball_x': None, 'ball_y': None, 'ball_detected': 0,
+                'ball_x_normalized': 0, 'ball_y_normalized': 0,
+                'ball_movement_score': 0, 'ball_tracking_confidence': 0,
+                'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+            })
+        
+        # プレイヤー特徴量
+        front_players = [det for det in player_detections if det[4] == self.player_front_class_id]
+        back_players = [det for det in player_detections if det[4] == self.player_back_class_id]
+        
+        features.update({
+            'player_front_count': len(front_players),
+            'player_back_count': len(back_players),
+            'total_players': len(player_detections)
+        })
+        
+        # 最も信頼度の高いプレイヤーの位置
+        if front_players:
+            best_front = max(front_players, key=lambda x: x[5])
+            x1, y1, x2, y2, _, conf = best_front
+            center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+            features.update({
+                'player_front_x': center_x,
+                'player_front_y': center_y,
+                'player_front_x_normalized': center_x / 1920.0,
+                'player_front_y_normalized': center_y / 1080.0,
+                'player_front_confidence': conf,
+                'player_front_width': x2 - x1,
+                'player_front_height': y2 - y1
+            })
+        else:
+            features.update({
+                'player_front_x': None, 'player_front_y': None,
+                'player_front_x_normalized': 0, 'player_front_y_normalized': 0,
+                'player_front_confidence': 0,
+                'player_front_width': 0, 'player_front_height': 0
+            })
+        
+        if back_players:
+            best_back = max(back_players, key=lambda x: x[5])
+            x1, y1, x2, y2, _, conf = best_back
+            center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+            features.update({
+                'player_back_x': center_x,
+                'player_back_y': center_y,
+                'player_back_x_normalized': center_x / 1920.0,
+                'player_back_y_normalized': center_y / 1080.0,
+                'player_back_confidence': conf,
+                'player_back_width': x2 - x1,
+                'player_back_height': y2 - y1
+            })
+        else:
+            features.update({
+                'player_back_x': None, 'player_back_y': None,
+                'player_back_x_normalized': 0, 'player_back_y_normalized': 0,
+                'player_back_confidence': 0,
+                'player_back_width': 0, 'player_back_height': 0
+            })
+        
+        # プレイヤー間距離
+        if front_players and back_players:
+            front_center = ((front_players[0][0] + front_players[0][2]) / 2,
+                           (front_players[0][1] + front_players[0][3]) / 2)
+            back_center = ((back_players[0][0] + back_players[0][2]) / 2,
+                          (back_players[0][1] + back_players[0][3]) / 2)
+            player_distance = math.sqrt(
+                (front_center[0] - back_center[0])**2 + 
+                (front_center[1] - back_center[1])**2
+            )
+            features['player_distance'] = player_distance
+            features['player_distance_normalized'] = player_distance / 1920.0
+        else:
+            features['player_distance'] = 0
+            features['player_distance_normalized'] = 0
+        
+        # トラッキング状態特徴量
+        features.update({
+            'candidate_balls_count': len(self.candidate_balls),
+            'disappeared_count': self.disappeared_count,
+            'trajectory_length': len(self.ball_trajectory),
+            'prediction_active': 1 if (self.active_ball and 
+                                     self.active_ball in self.candidate_balls and
+                                     self.candidate_balls[self.active_ball]['last_seen'] > 0) else 0
+        })
+        
+        return features
+    
+    def extract_tracking_features(self, player_detections: List[Tuple[int, int, int, int, int, float]]) -> dict:
+        """ボール・プレイヤー検出の基本特徴量を抽出（局面判定を除く）"""
+        features = {
+            'timestamp': datetime.now().isoformat(),
+            'frame_number': self.frame_number
+        }
+        
+        # ボール位置特徴量
+        if self.active_ball is not None and self.active_ball in self.candidate_balls:
+            ball_info = self.candidate_balls[self.active_ball]
+            if len(ball_info['position_history']) > 0:
+                pos = ball_info['position_history'][-1]
+                features.update({
+                    'ball_x': pos[0],
+                    'ball_y': pos[1],
+                    'ball_x_normalized': pos[0] / 1920.0,
+                    'ball_y_normalized': pos[1] / 1080.0,
+                    'ball_detected': 1,
+                    'ball_movement_score': ball_info['movement_score'],
+                    'ball_tracking_confidence': 1.0 if ball_info['last_seen'] == 0 else 0.5
+                })
+                
+                # ボール速度
+                if len(ball_info['position_history']) >= 2:
+                    velocity = self.calculate_velocity(list(ball_info['position_history']))
+                    features.update({
+                        'ball_velocity_x': velocity[0],
+                        'ball_velocity_y': velocity[1],
+                        'ball_speed': math.sqrt(velocity[0]**2 + velocity[1]**2),
+                        'ball_velocity_x_normalized': velocity[0] / 100.0,
+                        'ball_velocity_y_normalized': velocity[1] / 100.0
+                    })
+                else:
+                    features.update({
+                        'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                        'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+                    })
+            else:
+                features.update({
+                    'ball_x': None, 'ball_y': None, 'ball_detected': 0,
+                    'ball_x_normalized': 0, 'ball_y_normalized': 0,
+                    'ball_movement_score': 0, 'ball_tracking_confidence': 0,
+                    'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                    'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+                })
+        else:
+            features.update({
+                'ball_x': None, 'ball_y': None, 'ball_detected': 0,
+                'ball_x_normalized': 0, 'ball_y_normalized': 0,
+                'ball_movement_score': 0, 'ball_tracking_confidence': 0,
+                'ball_velocity_x': 0, 'ball_velocity_y': 0, 'ball_speed': 0,
+                'ball_velocity_x_normalized': 0, 'ball_velocity_y_normalized': 0
+            })
+        
+        # プレイヤー特徴量
+        front_players = [det for det in player_detections if det[4] == self.player_front_class_id]
+        back_players = [det for det in player_detections if det[4] == self.player_back_class_id]
+        
+        features.update({
+            'player_front_count': len(front_players),
+            'player_back_count': len(back_players),
+            'total_players': len(player_detections)
+        })
+        
+        # 最も信頼度の高いプレイヤーの位置
+        if front_players:
+            best_front = max(front_players, key=lambda x: x[5])
+            x1, y1, x2, y2, _, conf = best_front
+            center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+            features.update({
+                'player_front_x': center_x,
+                'player_front_y': center_y,
+                'player_front_x_normalized': center_x / 1920.0,
+                'player_front_y_normalized': center_y / 1080.0,
+                'player_front_confidence': conf,
+                'player_front_width': x2 - x1,
+                'player_front_height': y2 - y1
+            })
+        else:
+            features.update({
+                'player_front_x': None, 'player_front_y': None,
+                'player_front_x_normalized': 0, 'player_front_y_normalized': 0,
+                'player_front_confidence': 0,
+                'player_front_width': 0, 'player_front_height': 0
+            })
+        
+        if back_players:
+            best_back = max(back_players, key=lambda x: x[5])
+            x1, y1, x2, y2, _, conf = best_back
+            center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+            features.update({
+                'player_back_x': center_x,
+                'player_back_y': center_y,
+                'player_back_x_normalized': center_x / 1920.0,
+                'player_back_y_normalized': center_y / 1080.0,
+                'player_back_confidence': conf,
+                'player_back_width': x2 - x1,
+                'player_back_height': y2 - y1
+            })
+        else:
+            features.update({
+                'player_back_x': None, 'player_back_y': None,
+                'player_back_x_normalized': 0, 'player_back_y_normalized': 0,
+                'player_back_confidence': 0,
+                'player_back_width': 0, 'player_back_height': 0
+            })
+        
+        # プレイヤー間距離
+        if front_players and back_players:
+            front_center = ((front_players[0][0] + front_players[0][2]) / 2,
+                           (front_players[0][1] + front_players[0][3]) / 2)
+            back_center = ((back_players[0][0] + back_players[0][2]) / 2,
+                          (back_players[0][1] + back_players[0][3]) / 2)
+            player_distance = math.sqrt(
+                (front_center[0] - back_center[0])**2 + 
+                (front_center[1] - back_center[1])**2
+            )
+            features['player_distance'] = player_distance
+            features['player_distance_normalized'] = player_distance / 1920.0
+        else:
+            features['player_distance'] = 0
+            features['player_distance_normalized'] = 0
+        
+        # トラッキング状態特徴量
+        features.update({
+            'candidate_balls_count': len(self.candidate_balls),
+            'disappeared_count': self.disappeared_count,
+            'trajectory_length': len(self.ball_trajectory),
+            'prediction_active': 1 if (self.active_ball and 
+                                     self.active_ball in self.candidate_balls and
+                                     self.candidate_balls[self.active_ball]['last_seen'] > 0) else 0
+        })
+        
+        return features
+    
+    def save_tracking_features(self, video_name: str):
+        """ボール・プレイヤー検出の特徴量データを保存"""
+        if not self.training_features:
+            print("保存する特徴量データがありません")
+            return
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"tracking_features_{video_name}_{timestamp}.json"
+        output_path = self.training_data_dir / filename
+        
+        try:
+            with open(output_path, 'w') as f:
+                json.dump(self.training_features, f, indent=2)
+            print(f"検出・トラッキング特徴量を保存しました: {output_path}")
+            print(f"総フレーム数: {len(self.training_features)}")
+        except Exception as e:
+            print(f"特徴量保存エラー: {e}")
+
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """フレームを処理してテニスボールを追跡"""
+        """フレームを処理してテニスボールとプレイヤーを追跡"""
         # 動的な信頼度閾値を取得
         confidence_threshold = self.get_dynamic_confidence_threshold()
         
-        # YOLOv8で検出
-        results = self.model(frame, verbose=False)
+        # YOLOv8で検出（imgszを指定）
+        results = self.model(frame, imgsz=self.imgsz, verbose=False)
         
         # テニスボールの検出結果を抽出
         detections = []
+        player_detections = []  # プレイヤー検出結果を格納
+        
         for result in results:
             boxes = result.boxes
             if boxes is not None:
                 for box in boxes:
                     class_id = int(box.cls[0])
                     confidence = float(box.conf[0])
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
                     
                     if class_id == self.tennis_ball_class_id and confidence > confidence_threshold:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
                         center_x = (x1 + x2) // 2
                         center_y = (y1 + y2) // 2
                         detections.append((center_x, center_y, confidence))
+                    
+                    elif (class_id in [self.player_front_class_id, self.player_back_class_id] and 
+                          confidence > self.player_confidence_threshold):
+                        player_detections.append((x1, y1, x2, y2, class_id, confidence))
         
         # 候補ボールを更新
         self.update_candidate_balls(detections)
@@ -228,14 +712,26 @@ class TennisBallTracker:
                 self.active_ball = None
                 self.ball_trajectory.clear()
         
-        # 結果を描画
-        result_frame = self.draw_tracking_results(frame, detections)
+        # フレームデータを記録（ボール・プレイヤー検出データのみ）
+        self.record_frame_data(detections, player_detections)
+        
+        # 学習用データ保存（局面判定を除く基本特徴量のみ）
+        if self.save_training_data:
+            tracking_features = self.extract_tracking_features(player_detections)
+            self.training_features.append(tracking_features)
+        
+        # 結果を描画（ボールとプレイヤー両方）
+        result_frame = self.draw_tracking_results(frame, detections, player_detections)
         
         return result_frame
     
-    def draw_tracking_results(self, frame: np.ndarray, detections: List[Tuple[int, int, float]]) -> np.ndarray:
-        """追跡結果を描画"""
+    def draw_tracking_results(self, frame: np.ndarray, detections: List[Tuple[int, int, float]], 
+                            player_detections: List[Tuple[int, int, int, int, int, float]]) -> np.ndarray:
+        """追跡結果を描画（ボールとプレイヤー）"""
         result_frame = frame.copy()
+        
+        # プレイヤーを描画
+        self.draw_players(result_frame, player_detections)
         
         # 全ての検出結果を薄い色で描画
         for x, y, conf in detections:
@@ -291,6 +787,7 @@ class TennisBallTracker:
             f"Candidate balls: {len(self.candidate_balls)}",
             f"Active ball: {'Yes' if self.active_ball else 'No'}",
             f"Trajectory points: {len(self.ball_trajectory)}",
+            f"Players detected: {len(player_detections)}",
             f"Confidence threshold: {confidence_threshold:.2f}",
             f"Disappeared count: {self.disappeared_count}"
         ]
@@ -300,6 +797,34 @@ class TennisBallTracker:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         return result_frame
+    
+    def draw_players(self, frame: np.ndarray, player_detections: List[Tuple[int, int, int, int, int, float]]):
+        """プレイヤーを描画"""
+        for x1, y1, x2, y2, class_id, confidence in player_detections:
+            # クラスIDに応じて色とラベルを設定
+            if class_id == self.player_front_class_id:
+                color = (255, 0, 0)  # 青色でplayer_front
+                label = "Player Front"
+            elif class_id == self.player_back_class_id:
+                color = (0, 0, 255)  # 赤色でplayer_back
+                label = "Player Back"
+            else:
+                continue
+            
+            # バウンディングボックスを描画
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            # ラベルと信頼度を描画
+            label_text = f"{label}: {confidence:.2f}"
+            label_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            
+            # ラベル背景を描画
+            cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), 
+                         (x1 + label_size[0], y1), color, -1)
+            
+            # ラベルテキストを描画
+            cv2.putText(frame, label_text, (x1, y1 - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     def predict_next_position(self, position_history: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
         """次のフレームでのボール位置を予測"""
@@ -345,13 +870,69 @@ class TennisBallTracker:
         
         return normal_distance
 
+    def get_tracking_data(self) -> dict:
+        """局面判断用のトラッキングデータを取得"""
+        tracking_data = {
+            'timestamp': cv2.getTickCount() / cv2.getTickFrequency(),
+            'active_ball': None,
+            'ball_trajectory': list(self.ball_trajectory),
+            'ball_velocity': None,
+            'ball_position': None,
+            'ball_confidence': None,
+            'prediction_active': False,
+            'players': []
+        }
+        
+        # アクティブボール情報
+        if self.active_ball is not None and self.active_ball in self.candidate_balls:
+            ball_info = self.candidate_balls[self.active_ball]
+            if len(ball_info['position_history']) > 0:
+                tracking_data['ball_position'] = ball_info['position_history'][-1]
+                tracking_data['active_ball'] = self.active_ball
+                tracking_data['prediction_active'] = ball_info['last_seen'] > 0
+                
+                # 速度計算
+                if len(ball_info['position_history']) >= 2:
+                    tracking_data['ball_velocity'] = self.calculate_velocity(
+                        list(ball_info['position_history'])
+                    )
+        
+        return tracking_data
+    
+    def process_frame_for_analysis(self, frame: np.ndarray) -> Tuple[np.ndarray, dict]:
+        """フレーム処理と局面判断用データを同時に返す"""
+        result_frame = self.process_frame(frame)
+        tracking_data = self.get_tracking_data()
+        return result_frame, tracking_data
+
 def main():
     """メイン関数 - テスト用"""
     # モデルのパスを設定（適切なパスに変更してください）
-    model_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_25.pt"  # または他の適切なモデルパス
+    model_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_31.pt"  # または他の適切なモデルパス
+    
+    # 推論時の画像サイズを選択
+    print("推論時の画像サイズを選択してください:")
+    print("1. 1920 (高精度・低速)")
+    print("2. 1280 (バランス)")
+    print("3. 640 (高速・低精度)")
+    
+    imgsz_options = {1: 1920, 2: 1280, 3: 640}
+    
+    while True:
+        try:
+            imgsz_choice = int(input("画像サイズを選択 (1, 2, または 3): "))
+            if imgsz_choice in imgsz_options:
+                inference_imgsz = imgsz_options[imgsz_choice]
+                break
+            else:
+                print("1, 2, または 3 を入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+    
+    print(f"選択された画像サイズ: {inference_imgsz}")
     
     # 処理モードの選択
-    print("処理モードを選択してください:")
+    print("\n処理モードを選択してください:")
     print("1. 動画保存モード（結果を動画ファイルに保存）")
     print("2. リアルタイム表示モード（リアルタイム表示のみ）")
     
@@ -373,11 +954,58 @@ def main():
     else:
         print("選択されたモード: リアルタイム表示モード")
     
-    # トラッカーを初期化
-    tracker = TennisBallTracker(model_path)
+    # 時系列データ保存オプション
+    print("\n時系列データ出力を行いますか？")
+    print("1. はい（CSVファイルに保存）")
+    print("2. いいえ")
+    
+    while True:
+        try:
+            save_data_choice = int(input("選択 (1 または 2): "))
+            if save_data_choice in [1, 2]:
+                break
+            else:
+                print("1 または 2 を入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+    
+    save_time_series = (save_data_choice == 1)
+    
+    if save_time_series:
+        print("時系列データをCSVファイルに保存します")
+    else:
+        print("時系列データは保存しません")
+    
+    # 学習用データ保存オプションを追加
+    print("\n学習用データ保存を行いますか？")
+    print("1. はい（特徴量データを保存）")
+    print("2. いいえ")
+    
+    while True:
+        try:
+            save_training_choice = int(input("選択 (1 または 2): "))
+            if save_training_choice in [1, 2]:
+                break
+            else:
+                print("1 または 2 を入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+    
+    save_training_data = (save_training_choice == 1)
+    
+    if save_training_data:
+        print("学習用データを保存します")
+        print("注意: コート座標ファイル(court_coords_*.json)がtraining_dataフォルダにあることを確認してください")
+    else:
+        print("学習用データは保存しません")
+    
+    # トラッカーを初期化（imgszを指定）
+    tracker = TennisBallTracker(model_path, imgsz=inference_imgsz, save_training_data=save_training_data)
+    
+    print(f"推論画像サイズ: {inference_imgsz}")
     
     # ビデオファイルまたはカメラを開く
-    video_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw/output4.mp4"  # または適切なビデオパス
+    video_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw/output_segment_000.mp4"  # または適切なビデオパス
     cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
@@ -389,17 +1017,28 @@ def main():
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
+    # 出力ファイルパスの設定
+    output_dir = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/output"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     # 出力ビデオの設定（保存モードの場合のみ）
     out = None
-    output_path = None
+    output_video_path = None
     if save_video:
-        output_path = "../data/output/tennis_ball_tracking_result.mp4"
+        output_video_path = os.path.join(output_dir, f"tennis_tracking_{timestamp}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    
+    # 時系列データ出力パス
+    csv_output_path = None
+    if save_time_series:
+        csv_output_path = os.path.join(output_dir, f"tracking_data_{timestamp}.csv")
     
     print(f"処理開始 - FPS: {fps}, 解像度: {width}x{height}")
     if save_video:
-        print(f"出力ファイル: {output_path}")
+        print(f"動画出力ファイル: {output_video_path}")
+    if save_time_series:
+        print(f"CSVデータ出力ファイル: {csv_output_path}")
     print("リアルタイム表示中... 'q'キーで終了")
     
     frame_count = 0
@@ -434,10 +1073,20 @@ def main():
             out.release()
         cv2.destroyAllWindows()
         
+        # 時系列データを保存
+        if save_time_series and csv_output_path:
+            tracker.save_time_series_data(csv_output_path)
+          # 学習用データを保存
+        if save_training_data:
+            video_name = Path(video_path).stem if video_path else "unknown"
+            tracker.save_tracking_features(video_name)
+        
         if save_video:
-            print(f"処理完了 - 出力ファイル: {output_path}")
+            print(f"動画処理完了 - 出力ファイル: {output_video_path}")
         else:
             print("処理完了 - リアルタイム表示モード")
+        
+        print(f"総処理フレーム数: {frame_count}")
 
 if __name__ == "__main__":
     main()

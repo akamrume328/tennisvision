@@ -1,0 +1,273 @@
+{
+  "video_path": "C:\\Users\\akama\\AppData\\Local\\Programs\\Python\\Python310\\python_file\\projects\\tennisvision\\data\\raw\\output_segment_000.mp4",
+  "video_name": "output_segment_000",
+  "total_frames": 18000,
+  "fps": 60.0,
+  "duration_seconds": 300.0,
+  "phase_changes": [
+    {
+      "frame_number": 1,
+      "phase": "point_interval",
+      "timestamp": 0.016666666666666666
+    },
+    {
+      "frame_number": 535,
+      "phase": "serve_preparation",
+      "timestamp": 8.916666666666666
+    },
+    {
+      "frame_number": 1113,
+      "phase": "serve_back_deuce",
+      "timestamp": 18.55
+    },
+    {
+      "frame_number": 1251,
+      "phase": "rally",
+      "timestamp": 20.85
+    },
+    {
+      "frame_number": 2161,
+      "phase": "point_interval",
+      "timestamp": 36.016666666666666
+    },
+    {
+      "frame_number": 2989,
+      "phase": "serve_preparation",
+      "timestamp": 49.81666666666667
+    },
+    {
+      "frame_number": 3161,
+      "phase": "serve_front_ad",
+      "timestamp": 52.68333333333333
+    },
+    {
+      "frame_number": 3161,
+      "phase": "serve_back_ad",
+      "timestamp": 52.68333333333333
+    },
+    {
+      "frame_number": 3316,
+      "phase": "serve_preparation",
+      "timestamp": 55.266666666666666
+    },
+    {
+      "frame_number": 3699,
+      "phase": "serve_back_ad",
+      "timestamp": 61.65
+    },
+    {
+      "frame_number": 3847,
+      "phase": "rally",
+      "timestamp": 64.11666666666666
+    },
+    {
+      "frame_number": 4194,
+      "phase": "point_interval",
+      "timestamp": 69.9
+    },
+    {
+      "frame_number": 5588,
+      "phase": "serve_preparation",
+      "timestamp": 93.13333333333334
+    },
+    {
+      "frame_number": 5799,
+      "phase": "serve_back_deuce",
+      "timestamp": 96.65
+    },
+    {
+      "frame_number": 5937,
+      "phase": "rally",
+      "timestamp": 98.95
+    },
+    {
+      "frame_number": 6629,
+      "phase": "point_interval",
+      "timestamp": 110.48333333333333
+    },
+    {
+      "frame_number": 7712,
+      "phase": "serve_preparation",
+      "timestamp": 128.53333333333333
+    },
+    {
+      "frame_number": 7941,
+      "phase": "serve_back_ad",
+      "timestamp": 132.35
+    },
+    {
+      "frame_number": 8073,
+      "phase": "serve_preparation",
+      "timestamp": 134.55
+    },
+    {
+      "frame_number": 8425,
+      "phase": "serve_back_ad",
+      "timestamp": 140.41666666666666
+    },
+    {
+      "frame_number": 8566,
+      "phase": "rally",
+      "timestamp": 142.76666666666668
+    },
+    {
+      "frame_number": 9995,
+      "phase": "point_interval",
+      "timestamp": 166.58333333333334
+    },
+    {
+      "frame_number": 11277,
+      "phase": "serve_preparation",
+      "timestamp": 187.95
+    },
+    {
+      "frame_number": 11633,
+      "phase": "serve_back_deuce",
+      "timestamp": 193.88333333333333
+    },
+    {
+      "frame_number": 11781,
+      "phase": "rally",
+      "timestamp": 196.35
+    },
+    {
+      "frame_number": 12301,
+      "phase": "point_interval",
+      "timestamp": 205.01666666666668
+    },
+    {
+      "frame_number": 12676,
+      "phase": "serve_preparation",
+      "timestamp": 211.26666666666668
+    },
+    {
+      "frame_number": 13091,
+      "phase": "serve_back_ad",
+      "timestamp": 218.18333333333334
+    },
+    {
+      "frame_number": 13244,
+      "phase": "rally",
+      "timestamp": 220.73333333333332
+    },
+    {
+      "frame_number": 13931,
+      "phase": "point_interval",
+      "timestamp": 232.18333333333334
+    },
+    {
+      "frame_number": 14695,
+      "phase": "serve_preparation",
+      "timestamp": 244.91666666666666
+    },
+    {
+      "frame_number": 14986,
+      "phase": "serve_back_deuce",
+      "timestamp": 249.76666666666668
+    },
+    {
+      "frame_number": 15102,
+      "phase": "point_interval",
+      "timestamp": 251.7
+    },
+    {
+      "frame_number": 15532,
+      "phase": "serve_preparation",
+      "timestamp": 258.8666666666667
+    },
+    {
+      "frame_number": 15703,
+      "phase": "serve_back_deuce",
+      "timestamp": 261.71666666666664
+    },
+    {
+      "frame_number": 15858,
+      "phase": "rally",
+      "timestamp": 264.3
+    },
+    {
+      "frame_number": 16272,
+      "phase": "point_interval",
+      "timestamp": 271.2
+    },
+    {
+      "frame_number": 17110,
+      "phase": "serve_preparation",
+      "timestamp": 285.1666666666667
+    },
+    {
+      "frame_number": 17344,
+      "phase": "serve_back_ad",
+      "timestamp": 289.06666666666666
+    },
+    {
+      "frame_number": 17432,
+      "phase": "serve_preparation",
+      "timestamp": 290.53333333333336
+    },
+    {
+      "frame_number": 17673,
+      "phase": "serve_back_ad",
+      "timestamp": 294.55
+    },
+    {
+      "frame_number": 17814,
+      "phase": "serve_preparation",
+      "timestamp": 296.9
+    }
+  ],
+  "annotation_timestamp": "20250601_124509",
+  "phase_statistics": {
+    "point_interval": {
+      "duration": 125.46666666666667,
+      "percentage": 41.82222222222222
+    },
+    "serve_preparation": {
+      "duration": 63.65,
+      "percentage": 21.21666666666667
+    },
+    "serve_back_deuce": {
+      "duration": 11.583333333333334,
+      "percentage": 3.861111111111111
+    },
+    "rally": {
+      "duration": 83.31666666666668,
+      "percentage": 27.772222222222226
+    },
+    "serve_front_ad": {
+      "duration": 0.0,
+      "percentage": 0.0
+    },
+    "serve_back_ad": {
+      "duration": 15.966666666666669,
+      "percentage": 5.322222222222223
+    }
+  },
+  "court_coordinates": {
+    "top_left_corner": [
+      678,
+      661
+    ],
+    "top_right_corner": [
+      1052,
+      671
+    ],
+    "bottom_left_corner": [
+      0,
+      981
+    ],
+    "bottom_right_corner": [
+      1557,
+      1007
+    ],
+    "net_left_ground": [
+      558,
+      719
+    ],
+    "net_right_ground": [
+      1139,
+      730
+    ]
+  },
+  "court_coordinates_available": true
+}

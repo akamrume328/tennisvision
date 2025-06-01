@@ -1,0 +1,26 @@
+{
+  "top_left_corner": [
+    678,
+    661
+  ],
+  "top_right_corner": [
+    1052,
+    671
+  ],
+  "bottom_left_corner": [
+    0,
+    981
+  ],
+  "bottom_right_corner": [
+    1557,
+    1007
+  ],
+  "net_left_ground": [
+    558,
+    719
+  ],
+  "net_right_ground": [
+    1139,
+    730
+  ]
+}

@@ -1,0 +1,23 @@
+# GPU対応TensorFlow（2.11以降はtensorflowパッケージにGPUサポートが統合）
+tensorflow==2.12.0
+
+# 基本パッケージ
+numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+scikit-learn>=1.0.0
+opencv-python>=4.5.0
+joblib>=1.0.0
+
+# 可視化・分析
+plotly>=5.0.0
+tensorboard>=2.8.0
+
+# その他のユーティリティ
+tqdm>=4.60.0
+
+# Windows用CUDA関連（手動インストールが必要）
+# pip install CUDA toolkit は不要 - NVIDIA公式サイトからダウンロード
+# CUDA 11.8: https://developer.nvidia.com/cuda-11-8-0-download-archive
+# cuDNN 8.6: https://developer.nvidia.com/cudnn

@@ -145,8 +145,8 @@ def evaluate_yolo_model(model_path, data_path=None, data_yaml_path=None,
 
 if __name__ == "__main__":
     # 使用例
-    model_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_25.pt"
-    data_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/datasets/tracking1"
+    model_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_31.pt"
+    data_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/processed/datasets/final_merged_dataset"
     
     # 評価実行
     results = evaluate_yolo_model(
