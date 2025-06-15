@@ -643,51 +643,314 @@ def select_video_file():
         print("数字を入力してください")
         return None
 
-def check_training_data_status():
-    """訓練データの状況をチェック"""
-    print("=== 訓練データ状況チェック ===")
-    
+def get_training_data_files():
+    """training_dataフォルダ内のファイル一覧を取得"""
     training_dir = "training_data"
+    
     if not os.path.exists(training_dir):
-        print("❌ training_dataフォルダが存在しません")
-        print("📝 手順1: まず局面アノテーションを実行してデータを作成してください")
-        return False
+        print(f"❌ {training_dir} フォルダが存在しません")
+        return {
+            'annotations': [],
+            'features': [],
+            'models': [],
+            'court_coords': []
+        }
     
-    # アノテーションファイルをチェック
-    annotation_files = []
-    for file in os.listdir(training_dir):
-        if file.startswith("phase_annotations_") and file.endswith(".json"):
-            annotation_files.append(file)
+    files = {
+        'annotations': [],      # phase_annotations_*.json
+        'features': [],         # tennis_features_dataset_*.csv
+        'models': [],          # *.pkl, *.pth, *.h5
+        'court_coords': []     # court_coords_*.json
+    }
     
-    if not annotation_files:
+    try:
+        for file in os.listdir(training_dir):
+            file_path = os.path.join(training_dir, file)
+            
+            # アノテーションファイル
+            if file.startswith("phase_annotations_") and file.endswith(".json"):
+                files['annotations'].append(file_path)
+            
+            # 特徴量データセット
+            elif file.startswith("tennis_features_dataset_") and file.endswith(".csv"):
+                files['features'].append(file_path)
+            
+            # モデルファイル
+            elif any(file.endswith(ext) for ext in ['.pkl', '.pth', '.h5', '.joblib']):
+                if not file.startswith('tennis_') or 'model' in file.lower():
+                    files['models'].append(file_path)
+            
+            # コート座標ファイル
+            elif file.startswith("court_coords_") and file.endswith(".json"):
+                files['court_coords'].append(file_path)
+    
+    except Exception as e:
+        print(f"ディレクトリ読み取りエラー: {e}")
+    
+    # ファイルを日付順でソート（新しい順）
+    for file_type in files:
+        files[file_type].sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    
+    return files
+
+def select_training_data_file(file_type='annotations'):
+    """訓練データファイルを選択"""
+    files = get_training_data_files()
+    
+    file_type_names = {
+        'annotations': '局面アノテーション',
+        'features': '特徴量データセット', 
+        'models': 'モデル',
+        'court_coords': 'コート座標'
+    }
+    
+    target_files = files.get(file_type, [])
+    
+    if not target_files:
+        print(f"\n❌ {file_type_names[file_type]}ファイルが見つかりません")
+        print(f"📍 場所: training_data/ フォルダ")
+        return None
+    
+    print(f"\n=== {file_type_names[file_type]}ファイル一覧 ===")
+    
+    for i, file_path in enumerate(target_files, 1):
+        filename = os.path.basename(file_path)
+        
+        # ファイル情報を表示
+        try:
+            stat = os.stat(file_path)
+            size_mb = stat.st_size / (1024 * 1024)
+            mtime = datetime.fromtimestamp(stat.st_mtime)
+            
+            print(f"{i}: {filename}")
+            print(f"   📅 更新日時: {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"   📦 サイズ: {size_mb:.2f} MB")
+            
+            # ファイル内容の要約（JSONファイルの場合）
+            if file_type == 'annotations' and filename.endswith('.json'):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    video_name = data.get('video_name', '不明')
+                    phase_count = len(data.get('phase_changes', []))
+                    duration = data.get('duration_seconds', 0)
+                    print(f"   📹 動画: {video_name}")
+                    print(f"   🎯 局面変更数: {phase_count}")
+                    print(f"   ⏱️  時間: {duration:.1f}秒")
+                except:
+                    pass
+            
+            print()
+            
+        except Exception as e:
+            print(f"{i}: {filename} (情報取得エラー)")
+            print()
+    
+    # 全ファイル選択オプション
+    print(f"{len(target_files) + 1}: 📁 全ファイル使用")
+    print(f"{len(target_files) + 2}: 🔙 戻る")
+    
+    try:
+        choice = input(f"\n選択してください (1-{len(target_files) + 2}): ").strip()
+        choice_num = int(choice)
+        
+        if 1 <= choice_num <= len(target_files):
+            selected_file = target_files[choice_num - 1]
+            print(f"✅ 選択されたファイル: {os.path.basename(selected_file)}")
+            return selected_file
+        
+        elif choice_num == len(target_files) + 1:
+            print(f"✅ 全{len(target_files)}ファイルを使用します")
+            return target_files
+        
+        elif choice_num == len(target_files) + 2:
+            return None
+        
+        else:
+            print("❌ 無効な選択です")
+            return None
+            
+    except ValueError:
+        print("❌ 数字を入力してください")
+        return None
+
+def show_file_management_menu():
+    """ファイル管理メニューを表示"""
+    print("\n=== 📁 ファイル管理 ===")
+    
+    files = get_training_data_files()
+    
+    print(f"📊 データファイル統計:")
+    print(f"   局面アノテーション: {len(files['annotations'])}ファイル")
+    print(f"   特徴量データセット: {len(files['features'])}ファイル") 
+    print(f"   モデル: {len(files['models'])}ファイル")
+    print(f"   コート座標: {len(files['court_coords'])}ファイル")
+    
+    print(f"\n1: 局面アノテーションファイル管理")
+    print(f"2: 特徴量データセットファイル管理")
+    print(f"3: モデルファイル管理")
+    print(f"4: コート座標ファイル管理")
+    print(f"5: ファイル削除")
+    print(f"6: 戻る")
+    
+    while True:
+        try:
+            choice = input("\n選択してください (1-6): ").strip()
+            
+            if choice == '1':
+                file_path = select_training_data_file('annotations')
+                if file_path:
+                    if isinstance(file_path, list):
+                        print(f"選択された{len(file_path)}ファイルで処理を続行できます")
+                    else:
+                        print(f"選択されたファイル: {file_path}")
+                break
+                
+            elif choice == '2':
+                file_path = select_training_data_file('features')
+                if file_path:
+                    if isinstance(file_path, list):
+                        print(f"選択された{len(file_path)}ファイルで処理を続行できます")
+                    else:
+                        print(f"選択されたファイル: {file_path}")
+                break
+                
+            elif choice == '3':
+                file_path = select_training_data_file('models')
+                if file_path:
+                    print(f"選択されたファイル: {file_path}")
+                break
+                
+            elif choice == '4':
+                file_path = select_training_data_file('court_coords')
+                if file_path:
+                    print(f"選択されたファイル: {file_path}")
+                break
+                
+            elif choice == '5':
+                delete_files_menu()
+                break
+                
+            elif choice == '6':
+                break
+                
+            else:
+                print("❌ 無効な選択です。1-6を入力してください。")
+                
+        except KeyboardInterrupt:
+            print("\n操作がキャンセルされました")
+            break
+
+def delete_files_menu():
+    """ファイル削除メニュー"""
+    print("\n=== 🗑️ ファイル削除 ===")
+    print("⚠️  注意: 削除されたファイルは復元できません")
+    
+    files = get_training_data_files()
+    all_files = []
+    
+    # 全ファイルをリストに統合
+    for file_type, file_list in files.items():
+        for file_path in file_list:
+            all_files.append((file_path, file_type))
+    
+    if not all_files:
+        print("❌ 削除可能なファイルがありません")
+        return
+    
+    print(f"\n削除可能ファイル一覧:")
+    for i, (file_path, file_type) in enumerate(all_files, 1):
+        filename = os.path.basename(file_path)
+        file_type_name = {
+            'annotations': '局面アノテーション',
+            'features': '特徴量データセット',
+            'models': 'モデル',
+            'court_coords': 'コート座標'
+        }.get(file_type, file_type)
+        
+        print(f"{i}: [{file_type_name}] {filename}")
+    
+    print(f"{len(all_files) + 1}: 🔙 戻る")
+    
+    try:
+        choice = input(f"\n削除するファイルを選択 (1-{len(all_files) + 1}): ").strip()
+        choice_num = int(choice)
+        
+        if 1 <= choice_num <= len(all_files):
+            file_path, file_type = all_files[choice_num - 1]
+            filename = os.path.basename(file_path)
+            
+            print(f"\n🗑️  削除対象: {filename}")
+            confirm = input("本当に削除しますか？ (yes/no): ").lower().strip()
+            
+            if confirm in ['yes', 'y']:
+                try:
+                    os.remove(file_path)
+                    print(f"✅ ファイルを削除しました: {filename}")
+                except Exception as e:
+                    print(f"❌ 削除エラー: {e}")
+            else:
+                print("削除をキャンセルしました")
+                
+        elif choice_num == len(all_files) + 1:
+            return
+        else:
+            print("❌ 無効な選択です")
+            
+    except ValueError:
+        print("❌ 数字を入力してください")
+
+def check_training_data_status():
+    """訓練データの状況をチェック（更新版）"""
+    print("=== 📊 訓練データ状況チェック ===")
+    
+    files = get_training_data_files()
+    
+    # アノテーションファイル
+    if not files['annotations']:
         print("❌ 局面アノテーションファイルが見つかりません")
         print("📝 手順1: 局面アノテーション（選択肢1）を実行してデータを作成してください")
         return False
     
-    print(f"✅ {len(annotation_files)}個のアノテーションファイルが見つかりました:")
-    for file in annotation_files:
-        file_path = os.path.join(training_dir, file)
+    print(f"✅ {len(files['annotations'])}個のアノテーションファイルが見つかりました:")
+    for file_path in files['annotations']:
+        filename = os.path.basename(file_path)
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             phase_count = len(data.get('phase_changes', []))
             duration = data.get('duration_seconds', 0)
-            print(f"  📄 {file}")
-            print(f"     局面変更数: {phase_count}, 動画時間: {duration:.1f}秒")
+            video_name = data.get('video_name', '不明')
+            print(f"  📄 {filename}")
+            print(f"     📹 動画: {video_name}")
+            print(f"     🎯 局面変更数: {phase_count}, ⏱️ 時間: {duration:.1f}秒")
         except Exception as e:
-            print(f"  ❌ {file} (読み込みエラー: {e})")
+            print(f"  ❌ {filename} (読み込みエラー: {e})")
     
-    # train_phase_model.pyの存在チェック
-    model_script = "train_phase_model.py"
+    # 特徴量データセット
+    if files['features']:
+        print(f"\n✅ {len(files['features'])}個の特徴量データセットが見つかりました:")
+        for file_path in files['features']:
+            filename = os.path.basename(file_path)
+            print(f"  📊 {filename}")
+    
+    # モデルファイル
+    if files['models']:
+        print(f"\n✅ {len(files['models'])}個のモデルファイルが見つかりました:")
+        for file_path in files['models']:
+            filename = os.path.basename(file_path)
+            print(f"  🤖 {filename}")
+    
+    # train_lstm_model.pyの存在チェック
+    model_script = "train_lstm_model.py"
     if os.path.exists(model_script):
         print(f"\n✅ {model_script} が見つかりました")
-        print("🚀 実行準備完了！以下のコマンドで実行できます:")
-        print(f"   python {model_script}")
+        print("🚀 実行準備完了！")
     else:
         print(f"\n❌ {model_script} が見つかりません")
-        print("📝 手順2: train_phase_model.pyファイルを作成する必要があります")
+        print("📝 train_lstm_model.pyファイルを作成する必要があります")
     
-    return len(annotation_files) > 0
+    return len(files['annotations']) > 0
 
 def show_training_workflow():
     """訓練までのワークフローを表示"""
@@ -719,22 +982,23 @@ def main():
     """メイン関数 - 局面アノテーションツールを実行"""
     print("=== テニス局面アノテーションツール ===")
     print()
-    print("🎯 主な用途: train_phase_model.py用のデータ作成")
+    print("🎯 主な用途: train_lstm_model.py用のデータ作成")
     print("🏟️  新機能: 局面アノテーション中にコート座標も設定可能")
     print()
     print("1: 局面アノテーション")
     print("   - 動画の局面ラベリング")
-    print("   - train_phase_model.py用データ作成")
+    print("   - train_lstm_model.py用データ作成")
     print("   - コート座標設定（オプション）")
     print()
     print("2: コート座標設定のみ")
     print("3: 訓練データ状況チェック")
-    print("4: train_phase_model.py実行手順")
-    print("5: 終了")
+    print("4: train_lstm_model.py実行手順")
+    print("5: 📁 ファイル管理")
+    print("6: 終了")
     
     while True:
         try:
-            choice = input("\n選択してください (1-5): ").strip()
+            choice = input("\n選択してください (1-6): ").strip()
             
             if choice == '1':
                 # 局面アノテーション
@@ -747,7 +1011,7 @@ def main():
                         print("💾 データがtraining_data/フォルダに保存されました")
                         if annotator.court_coordinates:
                             print("🏟️  コート座標も一緒に保存されました")
-                        print("🚀 train_phase_model.pyを実行する準備ができました！")
+                        print("🚀 train_lstm_model.pyを実行する準備ができました！")
                     else:
                         print("❌ 局面アノテーションがキャンセルされました")
                 break
@@ -771,11 +1035,16 @@ def main():
                 continue
                 
             elif choice == '5':
+                # ファイル管理
+                show_file_management_menu()
+                continue
+                
+            elif choice == '6':
                 print("終了します")
                 break
                 
             else:
-                print("無効な選択です。1-5を入力してください。")
+                print("無効な選択です。1-6を入力してください。")
                 
         except KeyboardInterrupt:
             print("\n\n操作がキャンセルされました")

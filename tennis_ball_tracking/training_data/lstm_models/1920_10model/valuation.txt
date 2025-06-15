@@ -1,0 +1,16 @@
+=== 詳細評価 ===
+分類レポート:
+                   precision    recall  f1-score   support
+
+   point_interval       0.97      0.96      0.96       936
+            rally       0.97      0.96      0.96       430
+serve_preparation       0.83      0.92      0.87       257
+serve_front_deuce       0.92      0.88      0.90        68
+   serve_front_ad       0.95      0.84      0.89        50
+ serve_back_deuce       0.92      0.71      0.80        31
+    serve_back_ad       0.83      0.86      0.85        35
+       changeover       0.99      0.98      0.99       164
+
+         accuracy                           0.94      1971
+        macro avg       0.92      0.89      0.90      1971
+     weighted avg       0.95      0.94      0.94      1971
