@@ -1,0 +1,21 @@
+Classification Report (20250616_193816)
+==============================
+Model Type: stacked
+Test Accuracy: 0.9254
+F1 Score (Weighted): 0.9252
+==============================
+
+                   precision    recall  f1-score   support
+
+   point_interval       0.96      0.94      0.95       936
+            rally       0.94      0.97      0.96       430
+serve_preparation       0.80      0.86      0.83       257
+serve_front_deuce       0.90      0.79      0.84        68
+   serve_front_ad       0.86      0.84      0.85        50
+ serve_back_deuce       0.84      0.68      0.75        31
+    serve_back_ad       0.78      0.71      0.75        35
+       changeover       0.96      0.98      0.97       164
+
+         accuracy                           0.93      1971
+        macro avg       0.88      0.85      0.86      1971
+     weighted avg       0.93      0.93      0.93      1971

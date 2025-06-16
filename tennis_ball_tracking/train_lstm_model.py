@@ -457,12 +457,12 @@ class TennisLSTMTrainer:
         
         # データ前処理
         X_features = np.nan_to_num(X_features, nan=0.0, posinf=1e6, neginf=-1e6)
-        self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_features)
+        # self.scaler = StandardScaler() # スケーラーの初期化を削除
+        # X_scaled = self.scaler.fit_transform(X_features) # ここでのスケーリングを削除
         
         # シーケンス作成
         sequences, sequence_labels, confidence_sequences = self._create_sequences(
-            X_scaled, y_labels, video_names, confidence_scores
+            X_features, y_labels, video_names, confidence_scores # X_scaled の代わりに X_features を使用
         )
         
         if len(sequences) == 0:
@@ -627,21 +627,40 @@ class TennisLSTMTrainer:
         try:
             # データ分割 (再マッピングされたy_processedを使用)
             if confidence_scores is not None:
-                X_train, X_test, y_train, y_test, conf_train, conf_test = train_test_split(
+                X_train_raw, X_test_raw, y_train, y_test, conf_train, conf_test = train_test_split(
                     X, y_processed, confidence_scores, test_size=0.2, random_state=42, stratify=y_processed
                 )
-                X_train, X_val, y_train, y_val, conf_train, conf_val = train_test_split(
-                    X_train, y_train, conf_train, test_size=0.2, random_state=42, stratify=y_train
+                X_train_raw, X_val_raw, y_train, y_val, conf_train, conf_val = train_test_split(
+                    X_train_raw, y_train, conf_train, test_size=0.2, random_state=42, stratify=y_train
                 )
             else:
-                X_train, X_test, y_train, y_test = train_test_split(
+                X_train_raw, X_test_raw, y_train, y_test = train_test_split(
                     X, y_processed, test_size=0.2, random_state=42, stratify=y_processed
                 )
-                X_train, X_val, y_train, y_val = train_test_split(
-                    X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+                X_train_raw, X_val_raw, y_train, y_val = train_test_split(
+                    X_train_raw, y_train, test_size=0.2, random_state=42, stratify=y_train
                 )
                 conf_train = conf_val = conf_test = None
+
+            # スケーラーの学習と適用
+            self.scaler = StandardScaler()
             
+            # X_train_raw の形状を (サンプル数 * シーケンス長, 特徴量数) に変形してスケーラーを学習
+            nsamples_train, nx_train, ny_train = X_train_raw.shape
+            X_train_reshaped = X_train_raw.reshape((nsamples_train * nx_train, ny_train))
+            self.scaler.fit(X_train_reshaped)
+            
+            # 各データセットにスケーラーを適用
+            X_train = self.scaler.transform(X_train_reshaped).reshape(nsamples_train, nx_train, ny_train)
+            
+            nsamples_val, nx_val, ny_val = X_val_raw.shape
+            X_val_reshaped = X_val_raw.reshape((nsamples_val * nx_val, ny_val))
+            X_val = self.scaler.transform(X_val_reshaped).reshape(nsamples_val, nx_val, ny_val)
+            
+            nsamples_test, nx_test, ny_test = X_test_raw.shape
+            X_test_reshaped = X_test_raw.reshape((nsamples_test * nx_test, ny_test))
+            X_test = self.scaler.transform(X_test_reshaped).reshape(nsamples_test, nx_test, ny_test)
+
             print(f"データ分割完了:")
             print(f"  学習データ: {X_train.shape}")
             print(f"  検証データ: {X_val.shape}")

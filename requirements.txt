@@ -9,3 +9,4 @@ pandas==1.4.3
 jupyter==1.0.0
 labelImg==1.8.6
 ultralytics
+hmmlearn

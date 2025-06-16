@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import joblib
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Generator
 
 # train_lstm_model.py から必要な定義をコピーまたはインポート
 # (ここでは簡略化のため、主要なクラスと関数を直接記述します)
@@ -316,31 +316,28 @@ class TennisLSTMPredictor:
             print("無効な入力です。")
             return None
 
-    def _create_sequences_for_inference(self, X_scaled: np.ndarray, 
-                                       confidence_scores_full: Optional[np.ndarray] = None
-                                       ) -> Tuple[np.ndarray, List[int], Optional[np.ndarray]]:
-        sequences = []
-        original_indices = [] # 各シーケンスの最後のフレームが元のDFの何番目の行に対応するか
-        confidence_sequences_list = [] if confidence_scores_full is not None else None
-
+    def _generate_sequences_for_inference(self, X_scaled: np.ndarray, 
+                                          confidence_scores_full: Optional[np.ndarray] = None
+                                          ) -> Generator[Tuple[np.ndarray, int, Optional[np.ndarray]], None, None]:
+        """
+        推論用のシーケンス、元のインデックス、信頼度シーケンスを生成するジェネレータ。
+        """
         num_frames = X_scaled.shape[0]
-        
+        if num_frames < self.sequence_length:
+            print(f"⚠️  データ長 ({num_frames}) がシーケンス長 ({self.sequence_length}) より短いため、シーケンスを生成できません。")
+            return
+
         for i in range(num_frames - self.sequence_length + 1):
             seq_X = X_scaled[i : i + self.sequence_length]
-            sequences.append(seq_X)
-            original_indices.append(i + self.sequence_length - 1) # シーケンスの最後のフレームのインデックス
+            original_idx = i + self.sequence_length - 1 # シーケンスの最後のフレームのインデックス
 
-            if confidence_scores_full is not None and confidence_sequences_list is not None:
+            seq_conf = None
+            if confidence_scores_full is not None:
                 seq_conf = confidence_scores_full[i : i + self.sequence_length]
-                confidence_sequences_list.append(seq_conf)
-        
-        if not sequences:
-            return np.array([]), [], None
+            
+            yield seq_X, original_idx, seq_conf
 
-        conf_array = np.array(confidence_sequences_list) if confidence_sequences_list else None
-        return np.array(sequences), original_indices, conf_array
-
-    def prepare_input_data(self, csv_path: Path) -> Tuple[Optional[torch.Tensor], Optional[pd.DataFrame], Optional[List[int]], Optional[torch.Tensor]]:
+    def prepare_input_data(self, csv_path: Path) -> Tuple[Optional[np.ndarray], Optional[pd.DataFrame], Optional[np.ndarray]]:
         print(f"\n--- 入力データ準備: {csv_path.name} ---")
         try:
             df = pd.read_csv(csv_path)
@@ -350,75 +347,121 @@ class TennisLSTMPredictor:
             missing_features = [f for f in self.feature_names if f not in df.columns]
             if missing_features:
                 print(f"❌ 必要な特徴量がCSVにありません: {missing_features}")
-                return None, None, None, None
+                return None, None, None
             
             X_df = df[self.feature_names].copy()
 
-            # 欠損値処理 (学習時と同様の戦略が望ましいが、ここでは簡易的に0埋め)
+            # 欠損値処理
             X_df = X_df.fillna(0)
-            X_df = X_df.replace([np.inf, -np.inf], 0) # 無限大も0に置換
+            X_df = X_df.replace([np.inf, -np.inf], 0)
 
             X_scaled = self.scaler.transform(X_df)
+            X_scaled = X_scaled.astype(np.float32) # メモリ使用量削減
 
-            # 信頼度スコアの準備 (モデルが使用する場合)
             confidence_scores_full = None
             if self.model and self.model.enable_confidence_weighting:
-                if 'interpolated' in df.columns: # feature_extractor_predict.py の出力に基づく
-                    # interpolated: True (1) の場合に信頼度を下げる
-                    confidence_scores_full = 1.0 - df['interpolated'].astype(float) * 0.3 # 例: 補間フレームは信頼度0.7
-                elif 'data_quality' in df.columns: # もし data_quality 列があればそれを使う
-                     confidence_scores_full = df['data_quality'].fillna(1.0).values
+                if 'interpolated' in df.columns:
+                    base_confidence = 1.0 - df['interpolated'].astype(np.float32) * 0.3
+                    confidence_scores_full = base_confidence.astype(np.float32).values
+                elif 'data_quality' in df.columns:
+                     confidence_scores_full = df['data_quality'].fillna(1.0).astype(np.float32).values
                 else:
-                    print("⚠️  信頼度重み付けが有効なモデルですが、入力データに信頼度関連の列 ('interpolated' or 'data_quality') が見つかりません。信頼度1.0で処理します。")
-                    confidence_scores_full = np.ones(len(df))
-
-
-            sequences, original_indices, confidence_sequences_arr = self._create_sequences_for_inference(X_scaled, confidence_scores_full)
-
-            if sequences.shape[0] == 0:
-                print(f"⚠️  入力データからシーケンスを作成できませんでした (データ長: {len(df)}, シーケンス長: {self.sequence_length})。")
-                return None, None, None, None
-
-            sequences_tensor = torch.FloatTensor(sequences).to(self.device)
-            confidence_tensor = torch.FloatTensor(confidence_sequences_arr).to(self.device) if confidence_sequences_arr is not None else None
+                    print("⚠️  信頼度重み付けが有効なモデルですが、信頼度関連列が見つかりません。信頼度1.0で処理します。")
+                    confidence_scores_full = np.ones(len(df), dtype=np.float32)
             
-            print(f"✅ シーケンス作成完了: {sequences_tensor.shape[0]}シーケンス")
-            return sequences_tensor, df, original_indices, confidence_tensor
+            print(f"✅ データ前処理完了。フレーム数: {len(df)}")
+            return X_scaled, df, confidence_scores_full
 
         except Exception as e:
             print(f"❌ データ準備エラー: {e}")
             import traceback
             traceback.print_exc()
-            return None, None, None, None
+            return None, None, None
 
-    def predict(self, X_sequences: torch.Tensor, confidence_sequences_tensor: Optional[torch.Tensor] = None) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    def predict(self, X_scaled: np.ndarray,
+                original_df: pd.DataFrame,
+                confidence_scores_full: Optional[np.ndarray] = None,
+                batch_size: int = 256  # バッチサイズを調整可能にする
+                ) -> Optional[Tuple[np.ndarray, np.ndarray, List[int]]]:
         if self.model is None:
             print("❌ モデルがロードされていません。")
             return None
         
-        print(f"\n--- 推論実行 ---")
+        print(f"\n--- 推論実行 (バッチ処理) ---")
         self.model.eval()
-        all_preds = []
-        all_probas = []
         
-        # DataLoader を使ってバッチ処理
-        dataset = TensorDataset(X_sequences, confidence_sequences_tensor) if confidence_sequences_tensor is not None else TensorDataset(X_sequences)
-        loader = DataLoader(dataset, batch_size=256, shuffle=False)
+        all_preds_list = []
+        all_probas_list = []
+        all_original_indices_list = []
 
-        with torch.no_grad():
-            for batch_data in loader:
-                batch_X = batch_data[0]
-                batch_conf = batch_data[1] if len(batch_data) > 1 and self.model.enable_confidence_weighting else None
+        current_batch_sequences = []
+        current_batch_confidences = [] if self.model.enable_confidence_weighting and confidence_scores_full is not None else None
+        current_batch_indices = []
+
+        num_sequences_processed = 0
+        total_sequences_to_generate = max(0, X_scaled.shape[0] - self.sequence_length + 1)
+
+        seq_generator = self._generate_sequences_for_inference(X_scaled, confidence_scores_full)
+
+        for seq_X, original_idx, seq_conf in seq_generator:
+            current_batch_sequences.append(seq_X)
+            current_batch_indices.append(original_idx)
+            if current_batch_confidences is not None and seq_conf is not None:
+                current_batch_confidences.append(seq_conf)
+
+            if len(current_batch_sequences) == batch_size:
+                batch_X_np = np.array(current_batch_sequences, dtype=np.float32)
+                batch_X_tensor = torch.from_numpy(batch_X_np).to(self.device)
                 
-                outputs = self.model(batch_X, batch_conf)
+                batch_conf_tensor = None
+                if current_batch_confidences:
+                    batch_conf_np = np.array(current_batch_confidences, dtype=np.float32)
+                    batch_conf_tensor = torch.from_numpy(batch_conf_np).to(self.device)
+
+                with torch.no_grad():
+                    outputs = self.model(batch_X_tensor, batch_conf_tensor)
+                    probas = F.softmax(outputs, dim=1)
+                    _, preds = torch.max(probas, 1)
+                
+                all_preds_list.extend(preds.cpu().numpy())
+                all_probas_list.extend(probas.cpu().numpy())
+                all_original_indices_list.extend(current_batch_indices)
+                num_sequences_processed += len(current_batch_sequences)
+
+                current_batch_sequences = []
+                current_batch_indices = []
+                if current_batch_confidences is not None:
+                    current_batch_confidences = []
+                
+                if num_sequences_processed % (batch_size * 10) == 0: # 進捗表示
+                     print(f"   処理済みシーケンス: {num_sequences_processed} / {total_sequences_to_generate}")
+        
+        # 残りのシーケンスを処理
+        if current_batch_sequences:
+            batch_X_np = np.array(current_batch_sequences, dtype=np.float32)
+            batch_X_tensor = torch.from_numpy(batch_X_np).to(self.device)
+            
+            batch_conf_tensor = None
+            if current_batch_confidences:
+                batch_conf_np = np.array(current_batch_confidences, dtype=np.float32)
+                batch_conf_tensor = torch.from_numpy(batch_conf_np).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model(batch_X_tensor, batch_conf_tensor)
                 probas = F.softmax(outputs, dim=1)
                 _, preds = torch.max(probas, 1)
-                
-                all_preds.extend(preds.cpu().numpy())
-                all_probas.extend(probas.cpu().numpy())
-        
-        print(f"✅ 推論完了: {len(all_preds)}件")
-        return np.array(all_preds), np.array(all_probas)
+
+            all_preds_list.extend(preds.cpu().numpy())
+            all_probas_list.extend(probas.cpu().numpy())
+            all_original_indices_list.extend(current_batch_indices)
+            num_sequences_processed += len(current_batch_sequences)
+
+        if not all_preds_list:
+            print("⚠️  推論対象のシーケンスがありませんでした。")
+            return np.array([]), np.array([]), []
+
+        print(f"✅ 推論完了: {num_sequences_processed}件 (全シーケンス)")
+        return np.array(all_preds_list), np.array(all_probas_list), all_original_indices_list
 
     def format_predictions(self, predictions: np.ndarray, probabilities: np.ndarray, 
                            original_df: pd.DataFrame, original_indices: List[int]) -> pd.DataFrame:
@@ -481,20 +524,20 @@ class TennisLSTMPredictor:
         if not input_csv_path: return
 
         # 4. データ準備
-        sequences_tensor, original_df, original_indices, confidence_tensor = self.prepare_input_data(input_csv_path)
-        if sequences_tensor is None or original_df is None or original_indices is None:
+        X_scaled, original_df, confidence_scores_full = self.prepare_input_data(input_csv_path)
+        if X_scaled is None or original_df is None:
             print("❌ データ準備に失敗しました。処理を中断します。")
             return
 
         # 5. 推論実行
-        prediction_results = self.predict(sequences_tensor, confidence_tensor)
+        prediction_results = self.predict(X_scaled, original_df, confidence_scores_full)
         if prediction_results is None:
             print("❌ 推論に失敗しました。処理を中断します。")
             return
-        raw_preds, raw_probas = prediction_results
+        raw_preds, raw_probas, all_original_indices = prediction_results
         
         # 6. 結果フォーマット
-        formatted_df = self.format_predictions(raw_preds, raw_probas, original_df, original_indices)
+        formatted_df = self.format_predictions(raw_preds, raw_probas, original_df, all_original_indices)
 
         # 7. 結果保存
         self.save_predictions(formatted_df, input_csv_path.name)
@@ -522,20 +565,20 @@ class TennisLSTMPredictor:
             return None
 
         # 2. データ準備
-        sequences_tensor, original_df, original_indices, confidence_tensor = self.prepare_input_data(feature_csv_path)
-        if sequences_tensor is None or original_df is None or original_indices is None:
+        X_scaled, original_df, confidence_scores_full = self.prepare_input_data(feature_csv_path)
+        if X_scaled is None or original_df is None:
             print(f"❌ データ準備に失敗しました: {feature_csv_path.name}")
             return None
 
         # 3. 推論実行
-        prediction_results = self.predict(sequences_tensor, confidence_tensor)
+        prediction_results = self.predict(X_scaled, original_df, confidence_scores_full)
         if prediction_results is None:
             print("❌ 推論に失敗しました。")
             return None
-        raw_preds, raw_probas = prediction_results
+        raw_preds, raw_probas, all_original_indices = prediction_results
         
         # 4. 結果フォーマット
-        formatted_df = self.format_predictions(raw_preds, raw_probas, original_df, original_indices)
+        formatted_df = self.format_predictions(raw_preds, raw_probas, original_df, all_original_indices)
 
         # 5. 結果保存
         output_csv_path = self.save_predictions(formatted_df, feature_csv_path.name)
