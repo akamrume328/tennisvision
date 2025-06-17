@@ -10,11 +10,338 @@ from datetime import datetime
 import json
 import glob
 from pathlib import Path
+import time
+import cProfile
+import pstats
+from io import StringIO
+import threading
+import queue
+
+class PerformanceProfiler:
+    """パフォーマンス測定用クラス"""
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        self.timings = {}
+        self.frame_timings = []
+        self.total_frames = 0
+        
+    def start_timer(self, name: str):
+        """タイマー開始"""
+        if self.enabled:
+            if name not in self.timings:
+                self.timings[name] = {'total': 0.0, 'count': 0, 'min': float('inf'), 'max': 0.0}
+            self.timings[name]['start'] = time.perf_counter()
+    
+    def end_timer(self, name: str):
+        """タイマー終了"""
+        if self.enabled and name in self.timings and 'start' in self.timings[name]:
+            elapsed = time.perf_counter() - self.timings[name]['start']
+            self.timings[name]['total'] += elapsed
+            self.timings[name]['count'] += 1
+            self.timings[name]['min'] = min(self.timings[name]['min'], elapsed)
+            self.timings[name]['max'] = max(self.timings[name]['max'], elapsed)
+            del self.timings[name]['start']
+            return elapsed
+        return 0.0
+    
+    def record_frame_timing(self, frame_number: int, total_time: float, processing_details: dict = None):
+        """フレーム処理時間を記録"""
+        if self.enabled:
+            frame_data = {
+                'frame': frame_number,
+                'total_time': total_time,
+                'timestamp': time.time()
+            }
+            if processing_details:
+                frame_data.update(processing_details)
+            self.frame_timings.append(frame_data)
+            self.total_frames += 1
+    
+    def get_summary(self) -> dict:
+        """パフォーマンス統計サマリーを取得"""
+        if not self.enabled:
+            return {"message": "プロファイリングが無効です"}
+        
+        summary = {
+            'total_frames_processed': self.total_frames,
+            'timing_breakdown': {}
+        }
+        
+        for name, data in self.timings.items():
+            if data['count'] > 0:
+                avg_time = data['total'] / data['count']
+                summary['timing_breakdown'][name] = {
+                    'total_time': data['total'],
+                    'count': data['count'],
+                    'average_time': avg_time,
+                    'min_time': data['min'],
+                    'max_time': data['max'],
+                    'percentage': 0.0  # 後で計算
+                }
+        
+        # 全体に対する割合を計算
+        total_time = sum(data['total'] for data in self.timings.values())
+        if total_time > 0:
+            for name in summary['timing_breakdown']:
+                percentage = (summary['timing_breakdown'][name]['total_time'] / total_time) * 100
+                summary['timing_breakdown'][name]['percentage'] = percentage
+        
+        return summary
+    
+    def print_summary(self):
+        """パフォーマンス統計を出力"""
+        if not self.enabled:
+            print("プロファイリングが無効です")
+            return
+        
+        summary = self.get_summary()
+        
+        print("\n=== パフォーマンス分析結果 ===")
+        print(f"総処理フレーム数: {summary['total_frames_processed']}")
+        print("\n処理時間内訳:")
+        print(f"{'処理名':<25} {'総時間(s)':<10} {'平均(ms)':<10} {'最小(ms)':<10} {'最大(ms)':<10} {'回数':<8} {'割合(%)':<8}")
+        print("-" * 85)
+        
+        # 時間順でソート
+        sorted_timings = sorted(
+            summary['timing_breakdown'].items(),
+            key=lambda x: x[1]['total_time'],
+            reverse=True
+        )
+        
+        for name, data in sorted_timings:
+            print(f"{name:<25} {data['total_time']:<10.3f} {data['average_time']*1000:<10.2f} "
+                  f"{data['min_time']*1000:<10.2f} {data['max_time']*1000:<10.2f} "
+                  f"{data['count']:<8} {data['percentage']:<8.1f}")
+        
+        # フレーム統計
+        if self.frame_timings:
+            frame_times = [f['total_time'] for f in self.frame_timings]
+            avg_frame_time = sum(frame_times) / len(frame_times)
+            max_frame_time = max(frame_times)
+            min_frame_time = min(frame_times)
+            
+            print(f"\nフレーム処理統計:")
+            print(f"平均フレーム処理時間: {avg_frame_time*1000:.2f}ms")
+            print(f"最大フレーム処理時間: {max_frame_time*1000:.2f}ms")
+            print(f"最小フレーム処理時間: {min_frame_time*1000:.2f}ms")
+            print(f"理論FPS: {1/avg_frame_time:.1f}")
+    
+    def save_detailed_report(self, output_path: str):
+        """詳細レポートをファイルに保存"""
+        if not self.enabled:
+            return
+        
+        report_data = {
+            'summary': self.get_summary(),
+            'frame_timings': self.frame_timings,
+            'generation_time': datetime.now().isoformat()
+        }
+        
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
+            print(f"詳細パフォーマンスレポートを保存しました: {output_path}")
+        except Exception as e:
+            print(f"レポート保存エラー: {e}")
+
+class OptimizedFrameReader:
+    """フレームスキップ専用の最適化されたフレームリーダー"""
+    def __init__(self, video_path: str, frame_skip: int = 1, buffer_size: int = 2):
+        """
+        Args:
+            video_path: 動画ファイルのパス
+            frame_skip: フレームスキップ設定
+            buffer_size: バッファサイズ（通常1-2で十分）
+        """
+        self.video_path = video_path
+        self.frame_skip = frame_skip
+        self.buffer_size = buffer_size
+        self.current_frame_number = 0
+        self.total_frames = 0
+        
+        # 非同期読み込み用
+        self.frame_queue = queue.Queue(maxsize=buffer_size)
+        self.reader_thread = None
+        self.stop_reading = threading.Event()
+        self.reading_active = False
+        
+        # OpenCV VideoCapture
+        self.cap = None
+        self.fps = 0
+        self.width = 0
+        self.height = 0
+        
+        # パフォーマンス測定
+        self.skip_time_total = 0.0
+        self.read_time_total = 0.0
+        self.frames_skipped = 0
+        self.frames_read = 0
+        
+        self._initialize_video()
+    
+    def _initialize_video(self):
+        """動画の初期化"""
+        self.cap = cv2.VideoCapture(self.video_path)
+        if not self.cap.isOpened():
+            raise ValueError(f"動画ファイルを開けませんでした: {self.video_path}")
+        
+        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        print(f"🎬 動画情報: {self.width}x{self.height}, {self.fps}FPS, {self.total_frames}フレーム")
+        if self.frame_skip > 1:
+            expected_processing_frames = self.total_frames // self.frame_skip
+            print(f"📊 フレームスキップ{self.frame_skip}: 処理予定フレーム数 {expected_processing_frames}")
+    
+    def _background_reader(self):
+        """バックグラウンドでフレームを読み込むスレッド"""
+        frame_counter = 0
+        
+        while not self.stop_reading.is_set():
+            try:
+                # 処理対象フレームまでスキップ
+                skip_start_time = time.perf_counter()
+                frames_to_skip = self.frame_skip - 1
+                
+                for _ in range(frames_to_skip):
+                    ret = self.cap.grab()  # grab()は高速（フレームをデコードしない）
+                    if not ret:
+                        return
+                    frame_counter += 1
+                    self.frames_skipped += 1
+                
+                self.skip_time_total += time.perf_counter() - skip_start_time
+                
+                # 処理対象フレームを読み込み
+                read_start_time = time.perf_counter()
+                ret, frame = self.cap.read()
+                self.read_time_total += time.perf_counter() - read_start_time
+                
+                if not ret:
+                    break
+                
+                frame_counter += 1
+                self.frames_read += 1
+                
+                # キューに追加（ノンブロッキング）
+                try:
+                    self.frame_queue.put((frame, frame_counter), timeout=0.1)
+                except queue.Full:
+                    # バッファが満杯の場合は古いフレームを破棄
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put((frame, frame_counter), timeout=0.1)
+                    except (queue.Empty, queue.Full):
+                        continue
+                        
+            except Exception as e:
+                print(f"フレーム読み込みエラー: {e}")
+                break
+        
+        # 終了シグナル
+        try:
+            self.frame_queue.put((None, -1), timeout=0.1)
+        except queue.Full:
+            pass
+    
+    def start_reading(self):
+        """非同期読み込み開始"""
+        if self.reading_active:
+            return
+        
+        self.stop_reading.clear()
+        self.reader_thread = threading.Thread(target=self._background_reader, daemon=True)
+        self.reader_thread.start()
+        self.reading_active = True
+        
+        print(f"🚀 非同期フレーム読み込み開始（{self.frame_skip}フレームに1回処理）")
+    
+    def read_frame(self) -> Tuple[bool, Optional[np.ndarray], int]:
+        """
+        処理対象フレームを取得
+        
+        Returns:
+            (success, frame, frame_number)
+        """
+        if not self.reading_active:
+            self.start_reading()
+        
+        try:
+            frame, frame_number = self.frame_queue.get(timeout=5.0)
+            if frame is None:  # 終了シグナル
+                return False, None, -1
+            
+            self.current_frame_number = frame_number
+            return True, frame, frame_number
+            
+        except queue.Empty:
+            print("フレーム読み込みタイムアウト")
+            return False, None, -1
+    
+    def stop_reading(self):
+        """読み込み停止"""
+        if not self.reading_active:
+            return
+        
+        self.stop_reading.set()
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=2.0)
+        
+        self.reading_active = False
+    
+    def release(self):
+        """リソース解放"""
+        self._stop_reading()
+        if self.cap:
+            self.cap.release()
+    
+    def _stop_reading(self):
+        """内部用の読み込み停止メソッド"""
+        if not self.reading_active:
+            return
+        
+        self.stop_reading.set()
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=2.0)
+        
+        self.reading_active = False
+    
+    def get_performance_stats(self) -> dict:
+        """パフォーマンス統計を取得"""
+        total_time = self.skip_time_total + self.read_time_total
+        skip_percentage = (self.skip_time_total / total_time * 100) if total_time > 0 else 0
+        
+        return {
+            'frames_skipped': self.frames_skipped,
+            'frames_read': self.frames_read,
+            'skip_time_total': self.skip_time_total,
+            'read_time_total': self.read_time_total,
+            'skip_time_percentage': skip_percentage,
+            'avg_skip_time_per_frame': self.skip_time_total / max(self.frames_skipped, 1),
+            'avg_read_time_per_frame': self.read_time_total / max(self.frames_read, 1),
+            'efficiency_improvement': f"{(self.frame_skip - 1) / self.frame_skip * 100:.1f}%"
+        }
+    
+    def print_performance_stats(self):
+        """パフォーマンス統計を表示"""
+        stats = self.get_performance_stats()
+        print(f"\n=== フレーム読み込み最適化結果 ===")
+        print(f"スキップフレーム数: {stats['frames_skipped']}")
+        print(f"読み込みフレーム数: {stats['frames_read']}")
+        print(f"スキップ時間: {stats['skip_time_total']:.3f}秒 ({stats['skip_time_percentage']:.1f}%)")
+        print(f"読み込み時間: {stats['read_time_total']:.3f}秒")
+        print(f"フレーム当たりスキップ時間: {stats['avg_skip_time_per_frame']*1000:.2f}ms")
+        print(f"フレーム当たり読み込み時間: {stats['avg_read_time_per_frame']*1000:.2f}ms")
+        print(f"理論的効率改善: {stats['efficiency_improvement']}")
 
 class BallTracker:
     def __init__(self, model_path: str = "yolov8n.pt", imgsz: int = 640, 
                  save_training_data: bool = False, data_dir: str = "training_data",
-                 frame_skip: int = 1):
+                 frame_skip: int = 1, enable_profiling: bool = False,
+                 use_optimized_reader: bool = True):
         """
         テニスボールトラッカーの初期化
         
@@ -24,17 +351,38 @@ class BallTracker:
             save_training_data: 学習用データを保存するかどうか
             data_dir: 学習データ保存先ディレクトリ
             frame_skip: フレームスキップ設定（1=全フレーム処理、2=2フレームに1回、3=3フレームに1回）
+            enable_profiling: パフォーマンス測定を有効にするかどうか
+            use_optimized_reader: 最適化されたフレームリーダーを使用するかどうか
         """
+        # パフォーマンス測定初期化
+        self.profiler = PerformanceProfiler(enable_profiling)
+        
+        self.profiler.start_timer("model_loading")
         self.model = YOLO(model_path)
+        self.profiler.end_timer("model_loading")
+        
         self.imgsz = imgsz
         
         # フレームスキップ設定
         self.frame_skip = frame_skip
+        self.use_optimized_reader = use_optimized_reader
+        
         if frame_skip == 1:
             print(f"🖥️  全フレーム処理モード")
+            self.use_optimized_reader = False  # 全フレーム処理では最適化不要
         else:
-            print(f"🔄 フレームスキップモード: {frame_skip}フレームに1回処理")
+            if use_optimized_reader:
+                print(f"⚡ 最適化フレームスキップモード: {frame_skip}フレームに1回処理")
+            else:
+                print(f"🔄 標準フレームスキップモード: {frame_skip}フレームに1回処理")
         
+        if enable_profiling:
+            print("📊 パフォーマンス測定が有効です")
+        
+        # 最適化されたフレームリーダー
+        self.frame_reader = None
+        
+        # クラスIDの定義を追加
         self.player_front_class_id = 0  # player_frontのクラスID
         self.player_back_class_id = 1   # player_backのクラスID
         self.tennis_ball_class_id = 2  # tennis_ballのクラスID
@@ -132,6 +480,8 @@ class BallTracker:
     
     def update_candidate_balls(self, detections: List[Tuple[int, int, float]]):
         """候補ボールを更新"""
+        self.profiler.start_timer("candidate_ball_update")
+        
         matched_candidates = set()
         
         for detection in detections:
@@ -218,6 +568,8 @@ class BallTracker:
         # 古いボールを削除
         for ball_id in to_remove:
             del self.candidate_balls[ball_id]
+        
+        self.profiler.end_timer("candidate_ball_update")
     
     def select_active_ball(self):
         """最も活発に動いているボールをアクティブボールとして選択"""
@@ -255,6 +607,8 @@ class BallTracker:
                          player_detections: List[Tuple[int, int, int, int, int, float]], 
                          original_frame_number: int = None, is_lightweight: bool = False) -> dict:
         """統合されたフレームデータ記録メソッド"""
+        self.profiler.start_timer("data_recording")
+        
         self.frame_number += 1
         current_time = datetime.now()
         
@@ -402,6 +756,8 @@ class BallTracker:
                 })
         
         self.time_series_data.append(frame_data)
+        
+        self.profiler.end_timer("data_recording")
         return frame_data
     
     def create_interpolated_frame_data(self, frame_number: int, interpolated_pos: Tuple[int, int]) -> dict:
@@ -463,6 +819,8 @@ class BallTracker:
     def extract_tracking_features(self, player_detections: List[Tuple[int, int, int, int, int, float]], 
                                  original_frame_number: int = None) -> dict:
         """ボール・プレイヤー検出の基本特徴量を抽出"""
+        self.profiler.start_timer("feature_extraction")
+        
         features = {
             'timestamp': datetime.now().isoformat(),
             'frame_number': original_frame_number or self.frame_number
@@ -594,90 +952,101 @@ class BallTracker:
                                      self.candidate_balls[self.active_ball]['last_seen'] > 0) else 0
         })
         
+        self.profiler.end_timer("feature_extraction")
         return features
     
-    def predict_next_position(self, position_history: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
-        """次のフレームでのボール位置を予測"""
-        if len(position_history) < 2:
-            return None
+    def draw_tracking_results(self, frame: np.ndarray, detections: List[Tuple[int, int, float]], 
+                            player_detections: List[Tuple[int, int, int, int, int, float]]) -> np.ndarray:
+        """トラッキング結果を描画"""
+        self.profiler.start_timer("drawing")
         
-        # 直近の速度を計算
-        velocity = self.calculate_velocity(list(position_history))
+        result_frame = frame.copy()
+        height, width = frame.shape[:2]
         
-        # 物理的な加速度を考慮（重力の影響）
-        gravity_acceleration = 2  # ピクセル/フレーム²（下向き）        
-        # 次の位置を予測
-        last_pos = position_history[-1]
-        predicted_x = last_pos[0] + velocity[0]
-        predicted_y = last_pos[1] + velocity[1] + gravity_acceleration
+        # プレイヤーの描画
+        for x1, y1, x2, y2, class_id, confidence in player_detections:
+            color = (0, 255, 0) if class_id == self.player_front_class_id else (0, 0, 255)
+            label = "Front" if class_id == self.player_front_class_id else "Back"
+            
+            cv2.rectangle(result_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(result_frame, f"{label}: {confidence:.2f}", 
+                       (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
-        return (int(predicted_x), int(predicted_y))
-    
-    def get_dynamic_confidence_threshold(self) -> float:
-        """検出が少ない場合に信頼度閾値を動的に調整"""
-        # アクティブボールがトラッキング中の場合は低い閾値を使用
-        if self.active_ball is not None and self.disappeared_count > 3:
-            return self.base_confidence_threshold
-        else:
-            return self.high_confidence_threshold
-    
-    def calculate_prediction_match_distance(self, detection_pos: Tuple[int, int], 
-                                          ball_info: dict) -> float:
-        """予測位置を考慮したマッチング距離を計算"""
-        position_history = ball_info['position_history']
+        # 全ての検出されたボールを描画
+        for x, y, confidence in detections:
+            cv2.circle(result_frame, (x, y), 8, (255, 255, 0), 2)
+            cv2.putText(result_frame, f"{confidence:.2f}", 
+                       (x+10, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
         
-        # 通常のマッチング距離
-        last_pos = position_history[-1]
-        normal_distance = self.calculate_distance(detection_pos, last_pos)
-        
-        # 予測位置との距離
-        predicted_pos = self.predict_next_position(list(position_history))
-        if predicted_pos is not None:
-            prediction_distance = self.calculate_distance(detection_pos, predicted_pos)
-            # 予測距離と通常距離の最小値を使用
-            return min(normal_distance, prediction_distance)
-        
-        return normal_distance
-
-    def get_tracking_data(self) -> dict:
-        """局面判断用のトラッキングデータを取得"""
-        tracking_data = {
-            'timestamp': cv2.getTickCount() / cv2.getTickFrequency(),
-            'active_ball': None,
-            'ball_trajectory': list(self.ball_trajectory),
-            'ball_velocity': None,
-            'ball_position': None,
-            'ball_confidence': None,
-            'prediction_active': False,
-            'players': []
-        }
-        
-        # アクティブボール情報
+        # アクティブボールとその軌跡を描画
         if self.active_ball is not None and self.active_ball in self.candidate_balls:
             ball_info = self.candidate_balls[self.active_ball]
             if len(ball_info['position_history']) > 0:
-                tracking_data['ball_position'] = ball_info['position_history'][-1]
-                tracking_data['active_ball'] = self.active_ball
-                tracking_data['prediction_active'] = ball_info['last_seen'] > 0
+                current_pos = ball_info['position_history'][-1]
                 
-                # 速度計算
-                if len(ball_info['position_history']) >= 2:
-                    tracking_data['ball_velocity'] = self.calculate_velocity(
-                        list(ball_info['position_history'])
-                    )
+                # アクティブボールを強調表示
+                cv2.circle(result_frame, current_pos, 12, (0, 255, 0), 3)
+                cv2.putText(result_frame, f"ACTIVE {self.active_ball}", 
+                           (current_pos[0]+15, current_pos[1]), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # 予測位置を描画
+                predicted_pos = self.predict_next_position(list(ball_info['position_history']))
+                if predicted_pos is not None:
+                    cv2.circle(result_frame, predicted_pos, 6, (255, 0, 255), 2)
+                    cv2.putText(result_frame, "PRED", 
+                               (predicted_pos[0]+10, predicted_pos[1]-10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
         
-        return tracking_data
+        # 軌跡を描画
+        if len(self.ball_trajectory) > 1:
+            for i in range(1, len(self.ball_trajectory)):
+                cv2.line(result_frame, self.ball_trajectory[i-1], self.ball_trajectory[i], 
+                        (0, 255, 0), 2)
+        
+        # ステータス情報を描画
+        status_y = 30
+        status_info = [
+            f"Frame: {self.frame_number}",
+            f"Detections: {len(detections)}",
+            f"Candidates: {len(self.candidate_balls)}",
+            f"Active Ball: {self.active_ball}",
+            f"Disappeared: {self.disappeared_count}",
+            f"Trajectory: {len(self.ball_trajectory)}",
+            f"Confidence Threshold: {self.get_dynamic_confidence_threshold():.2f}"
+        ]
+        
+        for info in status_info:
+            cv2.putText(result_frame, info, (10, status_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            status_y += 25
+        
+        # フレームスキップ情報を描画
+        if self.frame_skip > 1:
+            skip_info = f"Frame Skip: 1/{self.frame_skip}"
+            cv2.putText(result_frame, skip_info, 
+                       (10, height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        self.profiler.end_timer("drawing")
+        return result_frame
     
     def process_frame_core(self, frame: np.ndarray, original_frame_number: int = None, 
                           is_lightweight: bool = False) -> Tuple[np.ndarray, bool]:
         """コアフレーム処理ロジック（統合版）"""
+        frame_start_time = time.perf_counter()
+        
         # 動的な信頼度を取得
+        self.profiler.start_timer("confidence_calculation")
         confidence_threshold = self.get_dynamic_confidence_threshold()
+        self.profiler.end_timer("confidence_calculation")
         
         # YOLOv8で検出
+        self.profiler.start_timer("yolo_inference")
         results = self.model(frame, imgsz=self.imgsz, verbose=False)
+        self.profiler.end_timer("yolo_inference")
         
         # 検出結果を抽出
+        self.profiler.start_timer("detection_parsing")
         detections = []
         player_detections = []
         
@@ -697,11 +1066,13 @@ class BallTracker:
                     elif (class_id in [self.player_front_class_id, self.player_back_class_id] and 
                           confidence > self.player_confidence_threshold):
                         player_detections.append((x1, y1, x2, y2, class_id, confidence))
+        self.profiler.end_timer("detection_parsing")
         
         # トラッキング更新
         self.update_candidate_balls(detections)
         
         # アクティブボール選択
+        self.profiler.start_timer("active_ball_selection")
         active_ball_id = self.select_active_ball()
         
         if active_ball_id is not None:
@@ -716,6 +1087,7 @@ class BallTracker:
             if self.disappeared_count > self.max_disappeared:
                 self.active_ball = None
                 self.ball_trajectory.clear()
+        self.profiler.end_timer("active_ball_selection")
         
         # データ記録
         self.record_frame_data(detections, player_detections, original_frame_number, is_lightweight)
@@ -728,8 +1100,33 @@ class BallTracker:
         # 結果描画（軽量版では省略）
         if not is_lightweight:
             result_frame = self.draw_tracking_results(frame, detections, player_detections)
+            
+            # フレーム処理時間を記録
+            frame_total_time = time.perf_counter() - frame_start_time
+            self.profiler.record_frame_timing(
+                original_frame_number or self.frame_number,
+                frame_total_time,
+                {
+                    'detections_count': len(detections),
+                    'players_count': len(player_detections),
+                    'candidates_count': len(self.candidate_balls)
+                }
+            )
+            
             return result_frame, True
         else:
+            # フレーム処理時間を記録
+            frame_total_time = time.perf_counter() - frame_start_time
+            self.profiler.record_frame_timing(
+                original_frame_number or self.frame_number,
+                frame_total_time,
+                {
+                    'detections_count': len(detections),
+                    'players_count': len(player_detections),
+                    'candidates_count': len(self.candidate_balls)
+                }
+            )
+            
             return frame, True
     
     def process_frame_optimized(self, frame: np.ndarray, frame_count: int, 
@@ -830,6 +1227,145 @@ class BallTracker:
         except Exception as e:
             print(f"特徴量保存エラー: {e}")
     
+    def predict_next_position(self, position_history: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+        """次のフレームでのボール位置を予測"""
+        if len(position_history) < 2:
+            return None
+        
+        # 直近の速度を計算
+        velocity = self.calculate_velocity(list(position_history))
+        
+        # 物理的な加速度を考慮（重力の影響）
+        gravity_acceleration = 2  # ピクセル/フレーム²（下向き）        
+        # 次の位置を予測
+        last_pos = position_history[-1]
+        predicted_x = last_pos[0] + velocity[0]
+        predicted_y = last_pos[1] + velocity[1] + gravity_acceleration
+        
+        return (int(predicted_x), int(predicted_y))
+    
+    def get_dynamic_confidence_threshold(self) -> float:
+        """検出が少ない場合に信頼度閾値を動的に調整"""
+        # アクティブボールがトラッキング中の場合は低い閾値を使用
+        if self.active_ball is not None and self.disappeared_count > 3:
+            return self.base_confidence_threshold
+        else:
+            return self.high_confidence_threshold
+    
+    def calculate_prediction_match_distance(self, detection_pos: Tuple[int, int], 
+                                          ball_info: dict) -> float:
+        """予測位置を考慮したマッチング距離を計算"""
+        position_history = ball_info['position_history']
+        
+        # 通常のマッチング距離
+        last_pos = position_history[-1]
+        normal_distance = self.calculate_distance(detection_pos, last_pos)
+        
+        # 予測位置との距離
+        predicted_pos = self.predict_next_position(list(position_history))
+        if predicted_pos is not None:
+            prediction_distance = self.calculate_distance(detection_pos, predicted_pos)
+            # 予測距離と通常距離の最小値を使用
+            return min(normal_distance, prediction_distance)
+        
+        return normal_distance
+
+    def get_tracking_data(self) -> dict:
+        """局面判断用のトラッキングデータを取得"""
+        tracking_data = {
+            'timestamp': cv2.getTickCount() / cv2.getTickFrequency(),
+            'active_ball': None,
+            'ball_trajectory': list(self.ball_trajectory),
+            'ball_velocity': None,
+            'ball_position': None,
+            'ball_confidence': None,
+            'prediction_active': False,
+            'players': []
+        }
+        
+        # アクティブボール情報
+        if self.active_ball is not None and self.active_ball in self.candidate_balls:
+            ball_info = self.candidate_balls[self.active_ball]
+            if len(ball_info['position_history']) > 0:
+                tracking_data['ball_position'] = ball_info['position_history'][-1]
+                tracking_data['active_ball'] = self.active_ball
+                tracking_data['prediction_active'] = ball_info['last_seen'] > 0
+                
+                # 速度計算
+                if len(ball_info['position_history']) >= 2:
+                    tracking_data['ball_velocity'] = self.calculate_velocity(
+                        list(ball_info['position_history'])
+                    )
+        
+        return tracking_data
+    
+    def initialize_video_processing(self, video_path: str) -> Tuple[int, int, int, int]:
+        """
+        動画処理の初期化（最適化されたリーダーまたは標準リーダー）
+        
+        Returns:
+            (fps, width, height, total_frames)
+        """
+        if self.use_optimized_reader and self.frame_skip > 1:
+            # 最適化されたフレームリーダーを使用
+            self.frame_reader = OptimizedFrameReader(
+                video_path, 
+                frame_skip=self.frame_skip,
+                buffer_size=2
+            )
+            return (self.frame_reader.fps, self.frame_reader.width, 
+                   self.frame_reader.height, self.frame_reader.total_frames)
+        else:
+            # 標準のOpenCVリーダーを使用
+            self.cap = cv2.VideoCapture(video_path)
+            if not self.cap.isOpened():
+                raise ValueError(f"動画ファイルを開けませんでした: {video_path}")
+            
+            fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+            width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            return fps, width, height, total_frames
+    
+    def read_next_frame(self) -> Tuple[bool, Optional[np.ndarray], int]:
+        """
+        次のフレームを読み込み（最適化対応）
+        
+        Returns:
+            (success, frame, frame_number)
+        """
+        if self.frame_reader:
+            # 最適化されたリーダーを使用
+            return self.frame_reader.read_frame()
+        else:
+            # 標準のOpenCVリーダーを使用
+            ret, frame = self.cap.read()
+            if ret:
+                self.frame_number += 1
+                return True, frame, self.frame_number
+            else:
+                return False, None, -1
+    
+    def release_video_resources(self):
+        """動画リソースを解放"""
+        if self.frame_reader:
+            self.frame_reader.release()
+            self.frame_reader = None
+        elif hasattr(self, 'cap') and self.cap:
+            self.cap.release()
+    
+    def get_reader_performance_stats(self) -> Optional[dict]:
+        """フレームリーダーのパフォーマンス統計を取得"""
+        if self.frame_reader:
+            return self.frame_reader.get_performance_stats()
+        return None
+    
+    def print_reader_performance_stats(self):
+        """フレームリーダーのパフォーマンス統計を表示"""
+        if self.frame_reader:
+            self.frame_reader.print_performance_stats()
+
 def main():
     """メイン関数 - 対話式の選択メニュー"""
     # モデルのパスを設定
@@ -883,6 +1419,48 @@ def main():
         print("選択されたモード: 全フレーム処理（最高精度）")
     else:
         print(f"選択されたモード: {frame_skip}フレームに1回処理（約{frame_skip}倍高速）")
+    
+    # プロファイリング設定の選択
+    print("\nパフォーマンス測定を行いますか？")
+    print("1. はい（詳細な処理時間を測定・わずかにオーバーヘッドあり）")
+    print("2. いいえ（通常処理）")
+    
+    while True:
+        try:
+            profiling_choice = int(input("選択 (1 または 2): "))
+            if profiling_choice in [1, 2]:
+                break
+            else:
+                print("1 または 2 を入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+    
+    enable_profiling = (profiling_choice == 1)
+    use_cprofile = False
+    
+    if enable_profiling:
+        print("詳細プロファイリングも行いますか？")
+        print("1. はい（cProfileによる詳細分析・より多くのオーバーヘッド）")
+        print("2. いいえ（基本測定のみ）")
+        
+        while True:
+            try:
+                cprofile_choice = int(input("選択 (1 または 2): "))
+                if cprofile_choice in [1, 2]:
+                    break
+                else:
+                    print("1 または 2 を入力してください。")
+            except ValueError:
+                print("数字を入力してください。")
+        
+        use_cprofile = (cprofile_choice == 1)
+        
+        if use_cprofile:
+            print("詳細プロファイリングが有効です（cProfile使用）")
+        else:
+            print("基本パフォーマンス測定が有効です")
+    else:
+        print("パフォーマンス測定は無効です")
     
     # 処理モードの選択
     print("\n出力モードを選択してください:")
@@ -963,6 +1541,24 @@ def main():
     elif not training_data_only:
         print("学習用データは保存しません")
 
+    # フレーム読み込み最適化をデフォルトで有効に設定
+    use_optimized_reader = True
+    
+    # フレームスキップが有効な場合のみ最適化オプションを表示
+    if frame_skip > 1:
+        print("\n⚡ フレーム読み込み最適化が有効です（推奨設定）")
+        
+        # 上級ユーザー向けオプション
+        advanced_choice = input("標準処理に変更しますか？ (no/yes, デフォルト: no): ").strip().lower()
+        if advanced_choice == 'yes':
+            use_optimized_reader = False
+            print("🔄 標準フレーム読み込みを使用します")
+        else:
+            print("⚡ 最適化されたフレーム読み込みを使用します（大幅高速化）")
+    else:
+        use_optimized_reader = False
+        print("全フレーム処理のため、標準読み込みを使用します")
+
     # 動画ファイルの選択
     print("\n処理する動画ファイルを選択してください:")
     video_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw")
@@ -1005,142 +1601,171 @@ def main():
     
     print(f"選択された動画ファイル: {video_path}")
 
-    # トラッカーを初期化（フレームスキップ設定を含める）
+    # トラッカーを初期化（最適化設定を含める）
     tracker = BallTracker(model_path, imgsz=inference_imgsz, 
-                          save_training_data=save_training_data, frame_skip=frame_skip)
+                          save_training_data=save_training_data, frame_skip=frame_skip,
+                          enable_profiling=enable_profiling, use_optimized_reader=use_optimized_reader)
     
     print(f"推論画像サイズ: {inference_imgsz}")
     print(f"フレームスキップ: {frame_skip}フレームに1回処理")
-    
-    # ビデオファイルを開く
-    # video_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw/output_segment_000.mp4" # 修正: ユーザー選択を使用
-    cap = cv2.VideoCapture(video_path)
-    
-    if not cap.isOpened():
-        print("Error: ビデオファイルを開けませんでした")
-        return
-    
-    # ビデオの情報を取得
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # 出力ファイルパスの設定
-    output_dir = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/output"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # 出力ビデオの設定（保存モードの場合のみ）
-    out = None
-    output_video_path = None
-    if save_video:
-        output_video_path = os.path.join(output_dir, f"tennis_tracking_{timestamp}.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-    
-    # 時系列データ出力パス
-    csv_output_path = None
-    if save_time_series:
-        csv_output_path = os.path.join(output_dir, f"tracking_data_{timestamp}.csv")
-    
-    print(f"処理開始 - FPS: {fps}, 解像度: {width}x{height}")
-    if total_frames > 0:
-        print(f"総フレーム数: {total_frames}")
-    if save_video:
-        print(f"動画出力ファイル: {output_video_path}")
-    if save_time_series:
-        print(f"CSVデータ出力ファイル: {csv_output_path}")
-    
-    if training_data_only:
-        print("学習用データ出力モード - 高速処理中...")
-        print("注意: 画面表示は行われません。進捗を確認してください。")
-    else:
-        print("リアルタイム表示中... 'q'キーで終了")
-    
-    frame_count = 0
-    processed_frame_count = 0
-    start_time = datetime.now()
+    if use_optimized_reader and frame_skip > 1:
+        print("⚡ 最適化フレーム読み込み: 有効")
     
     try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # フレームスキップ対応の処理
-            result_frame, was_processed = tracker.process_frame_optimized(
-                frame, frame_count, training_data_only
-            )
-            
-            if was_processed:
-                processed_frame_count += 1
-            
-            # 動画保存（保存モードの場合のみ）
-            if save_video and out is not None and not training_data_only:
-                out.write(result_frame)
-            
-            # リアルタイム表示
-            if show_realtime and not training_data_only:
-                cv2.imshow('Tennis Ball Tracking', result_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    print("ユーザーによって処理が中断されました")
+        # 動画処理の初期化
+        fps, width, height, total_frames = tracker.initialize_video_processing(video_path)
+        
+        # 出力ファイルパスの設定
+        output_dir = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/output"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # プロファイリング出力パス
+        profile_output_path = None
+        if enable_profiling:
+            profile_output_path = os.path.join(output_dir, f"performance_report_{timestamp}.json")
+        
+        # 出力ビデオの設定（保存モードの場合のみ）
+        out = None
+        output_video_path = None
+        if save_video:
+            output_video_path = os.path.join(output_dir, f"tennis_tracking_{timestamp}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        
+        # 時系列データ出力パス
+        csv_output_path = None
+        if save_time_series:
+            csv_output_path = os.path.join(output_dir, f"tracking_data_{timestamp}.csv")
+        
+        print(f"処理開始 - FPS: {fps}, 解像度: {width}x{height}")
+        if total_frames > 0:
+            print(f"総フレーム数: {total_frames}")
+        if save_video:
+            print(f"動画出力ファイル: {output_video_path}")
+        if save_time_series:
+            print(f"CSVデータ出力ファイル: {csv_output_path}")
+        
+        if training_data_only:
+            print("学習用データ出力モード - 高速処理中...")
+            print("注意: 画面表示は行われません。進捗を確認してください。")
+        else:
+            print("リアルタイム表示中... 'q'キーで終了")
+        
+        frame_count = 0
+        processed_frame_count = 0
+        start_time = datetime.now()
+        
+        # cProfile設定
+        profiler = None
+        if use_cprofile:
+            profiler = cProfile.Profile()
+            profiler.enable()
+        
+        try:
+            while True:
+                # 最適化されたフレーム読み込み
+                ret, frame, current_frame_number = tracker.read_next_frame()
+                if not ret:
                     break
-            
-            frame_count += 1
-            
-            # 進捗表示（フレームスキップ考慮）
-            if training_data_only:
-                if frame_count % 200 == 0:  # 200フレームごとに表示
-                    elapsed_time = (datetime.now() - start_time).total_seconds()
-                    fps_current = frame_count / elapsed_time if elapsed_time > 0 else 0
-                    progress = (frame_count / total_frames * 100) if total_frames > 0 else 0
-                    processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-                    print(f"処理中... フレーム: {frame_count}/{total_frames if total_frames > 0 else '?'} "
-                          f"({progress:.1f}%) | 処理速度: {fps_current:.1f} FPS | "
-                          f"実処理数: {processed_frame_count} ({processing_rate:.1f}%) | 軌跡: {len(tracker.ball_trajectory)}")
-            elif frame_count % 100 == 0:
-                processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-                print(f"表示フレーム: {frame_count} | 処理フレーム: {processed_frame_count} ({processing_rate:.1f}%)")
+                
+                frame_count = current_frame_number
+                
+                # フレーム処理（最適化リーダー使用時は常に処理対象フレーム）
+                if tracker.use_optimized_reader and tracker.frame_skip > 1:
+                    # 最適化リーダーは処理対象フレームのみ返すので直接処理
+                    result_frame, was_processed = tracker.process_frame_core(
+                        frame, current_frame_number, is_lightweight=training_data_only
+                    )
+                    processed_frame_count += 1
+                    was_processed = True
+                else:
+                    # 標準処理（従来のフレームスキップロジック）
+                    result_frame, was_processed = tracker.process_frame_optimized(
+                        frame, frame_count, training_data_only
+                    )
+                    if was_processed:
+                        processed_frame_count += 1
+                
+                # 動画保存（保存モードの場合のみ）
+                if save_video and out is not None and not training_data_only:
+                    out.write(result_frame)
+                
+                # リアルタイム表示
+                if show_realtime and not training_data_only:
+                    cv2.imshow('Tennis Ball Tracking', result_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        print("ユーザーによって処理が中断されました")
+                        break
+                
+                # 進捗表示（最適化対応）
+                if training_data_only:
+                    if frame_count % 200 == 0:  # 200フレームごとに表示
+                        elapsed_time = (datetime.now() - start_time).total_seconds()
+                        fps_current = frame_count / elapsed_time if elapsed_time > 0 else 0
+                        progress = (frame_count / total_frames * 100) if total_frames > 0 else 0
+                        
+                        if tracker.use_optimized_reader:
+                            print(f"⚡処理中... フレーム: {frame_count}/{total_frames if total_frames > 0 else '?'} "
+                                  f"({progress:.1f}%) | 処理速度: {fps_current:.1f} FPS | "
+                                  f"処理フレーム: {processed_frame_count} | 軌跡: {len(tracker.ball_trajectory)}")
+                        else:
+                            processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
+                            print(f"処理中... フレーム: {frame_count}/{total_frames if total_frames > 0 else '?'} "
+                                  f"({progress:.1f}%) | 処理速度: {fps_current:.1f} FPS | "
+                                  f"実処理数: {processed_frame_count} ({processing_rate:.1f}%) | 軌跡: {len(tracker.ball_trajectory)}")
+                elif frame_count % 100 == 0:
+                    if tracker.use_optimized_reader:
+                        print(f"⚡表示フレーム: {frame_count} | 処理フレーム: {processed_frame_count}")
+                    else:
+                        processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
+                        print(f"表示フレーム: {frame_count} | 処理フレーム: {processed_frame_count} ({processing_rate:.1f}%)")
 
-    finally:
-        # 最終統計の表示（フレームスキップ考慮）
-        elapsed_time = (datetime.now() - start_time).total_seconds()
-        avg_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
-        processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-        expected_rate = (100 / frame_skip) if frame_skip > 0 else 100
+        finally:
+            # cProfileを停止
+            if profiler:
+                profiler.disable()
+            
+            # 最終統計の表示（フレームスキップ考慮）
+            elapsed_time = (datetime.now() - start_time).total_seconds()
+            avg_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+            processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
+            expected_rate = (100 / frame_skip) if frame_skip > 0 else 100
+            
+            print(f"\n=== 処理完了統計 ===")
+            print(f"総フレーム数: {frame_count}")
+            print(f"実処理フレーム数: {processed_frame_count}")
+            print(f"実際の処理率: {processing_rate:.1f}%")
+            print(f"期待処理率: {expected_rate:.1f}%（{frame_skip}フレームに1回）")
+            print(f"平均処理速度: {avg_fps:.1f} FPS")
+            print(f"処理時間: {elapsed_time:.1f}秒")
+            if frame_skip > 1:
+                print(f"スピードアップ: 約{frame_skip}倍")
+            
+            if tracker.save_training_data:
+                feature_count = len(tracker.training_features)
+                time_series_count = len(tracker.time_series_data)
+                print(f"学習用特徴量: {feature_count}件")
+                print(f"時系列データ: {time_series_count}件")
+                print(f"軌跡ポイント: {len(tracker.ball_trajectory)}件")
+            
+            # 時系列データを保存
+            if save_time_series and csv_output_path:
+                tracker.save_time_series_data(csv_output_path)
+            
+            # 学習用データを保存
+            if save_training_data:
+                video_name = Path(video_path).stem
+                tracker.save_tracking_features_with_video_info(video_name, fps, total_frames)
         
-        print(f"\n=== 処理完了統計 ===")
-        print(f"総フレーム数: {frame_count}")
-        print(f"実処理フレーム数: {processed_frame_count}")
-        print(f"実際の処理率: {processing_rate:.1f}%")
-        print(f"期待処理率: {expected_rate:.1f}%（{frame_skip}フレームに1回）")
-        print(f"平均処理速度: {avg_fps:.1f} FPS")
-        print(f"処理時間: {elapsed_time:.1f}秒")
-        if frame_skip > 1:
-            print(f"スピードアップ: 約{frame_skip}倍")
-        
-        if tracker.save_training_data:
-            feature_count = len(tracker.training_features)
-            time_series_count = len(tracker.time_series_data)
-            print(f"学習用特徴量: {feature_count}件")
-            print(f"時系列データ: {time_series_count}件")
-            print(f"軌跡ポイント: {len(tracker.ball_trajectory)}件")
-        
-        # 時系列データを保存
-        if save_time_series and csv_output_path:
-            tracker.save_time_series_data(csv_output_path)
-        
-        # 学習用データを保存
-        if save_training_data:
-            video_name = Path(video_path).stem
-            tracker.save_tracking_features_with_video_info(video_name, fps, total_frames)
-        
-        cap.release()
-        if out is not None:
-            out.release()
-        if show_realtime and not training_data_only:
-            cv2.destroyAllWindows()
+        # フレームリーダーのパフォーマンス統計を表示
+        if tracker.use_optimized_reader and enable_profiling:
+            tracker.print_reader_performance_stats()
+    
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        tracker.release_video_resources()
+        return False
     
     return True
 

@@ -117,56 +117,108 @@ def run_pipeline(args):
     # --- ステップ 2: ボールトラッキング ---
     print("\n--- ステップ 2: ボールトラッキング ---")
     step_2_start_time = time.time()
+
+    # フレーム最適化をframe_skip>1なら必ず有効にする
+    use_optimized_reader = True if args.frame_skip > 1 else False
+    if use_optimized_reader:
+        print(f"⚡ 最適化フレーム読み込みを使用（{args.frame_skip}フレームに1回処理）")
+    else:
+        print("🖥️ 全フレーム処理モード（標準読み込み）")
+
+    # BallTrackerを最新仕様で初期化
     tracker = BallTracker(
         model_path=args.yolo_model,
         imgsz=args.imgsz,
         save_training_data=True,
         data_dir=str(tracking_output_dir),
-        frame_skip=args.frame_skip
+        frame_skip=args.frame_skip,
+        enable_profiling=False,  # パイプラインでは無効
+        use_optimized_reader=use_optimized_reader
     )
-    
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        print(f"エラー: ビデオを開けませんでした {video_path}")
+
+    # BallTrackerの統合フレームリーダーを使用
+    try:
+        fps, width, height, total_video_frames = tracker.initialize_video_processing(str(video_path))
+        print(f"ビデオ情報: FPS={fps}, 総フレーム数={total_video_frames}")
+        print(f"処理モード: {'⚡ 最適化フレーム読み込み' if use_optimized_reader else '🖥️ 標準フレーム読み込み'}")
+    except Exception as e:
+        print(f"エラー: 動画初期化に失敗しました - {e}")
         return
 
-    video_fps = cap.get(cv2.CAP_PROP_FPS)
-    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    print(f"ビデオ情報: FPS={video_fps}, 総フレーム数={total_video_frames}")
-
-    # tqdm をインポート (進捗表示用)
+    # 進捗表示用
     try:
         from tqdm import tqdm
         use_tqdm = True
     except ImportError:
         use_tqdm = False
-        print("tqdmが見つかりません。進捗バーなしで実行します。`pip install tqdm`でインストールできます。")
+        print("tqdmが見つかりません。進捗バーなしで実行します。")
 
-    frame_iterable = range(total_video_frames) if total_video_frames > 0 else iter(lambda: cap.read()[0], False)
-    if use_tqdm and total_video_frames > 0:
-        frame_iterable = tqdm(frame_iterable, desc=f"トラッキング中 {video_stem}", total=total_video_frames)
-    
+    # フレーム処理ループ
+    processed_frames = 0
     current_frame_idx = 0
-    for _ in frame_iterable: # total_video_framesが0の場合、cap.read()でループ制御
-        ret, frame = cap.read()
-        if not ret:
-            if total_video_frames > 0 and current_frame_idx < total_video_frames:
-                 print(f"警告: フレーム {current_frame_idx} の読み込みに失敗しましたが、まだ総フレーム数に達していません。")
-            break
-        
-        tracker.process_frame_optimized(frame, current_frame_idx, training_data_only=True)
-        current_frame_idx += 1
     
-    actual_processed_frames = current_frame_idx # 実際に読み込まれたフレーム数
-    cap.release()
-    
-    # total_video_framesが0または不正確だった場合、actual_processed_framesで更新
-    if total_video_frames == 0 or abs(total_video_frames - actual_processed_frames) > 5 : # 5フレーム以上の誤差がある場合
-        print(f"警告: OpenCVの総フレーム数 ({total_video_frames}) と実読み込みフレーム数 ({actual_processed_frames}) が異なります。実読み込みフレーム数を使用します。")
-        total_video_frames = actual_processed_frames
+    if use_tqdm and total_video_frames > 0:
+        # 最適化使用時は処理予定フレーム数、標準時は全フレーム数
+        expected_frames = total_video_frames // args.frame_skip if use_optimized_reader else total_video_frames
+        progress_bar = tqdm(total=expected_frames, desc=f"トラッキング中 {video_stem}")
+    else:
+        progress_bar = None
 
-    tracker.save_tracking_features_with_video_info(video_stem, video_fps, total_video_frames)
+    try:
+        while True:
+            # BallTrackerの統合フレーム読み込み
+            ret, frame, frame_number = tracker.read_next_frame()
+            if not ret:
+                break
+            
+            current_frame_idx = frame_number
+
+            # フレーム処理（最適化時は常に処理、標準時はスキップ判定）
+            if use_optimized_reader:
+                # 最適化リーダーは処理対象フレームのみ返すので直接処理
+                tracker.process_frame_core(frame, frame_number, is_lightweight=True)
+                processed_frames += 1
+            else:
+                # 標準処理でのフレームスキップ対応
+                result_frame, was_processed = tracker.process_frame_optimized(
+                    frame, frame_number, training_data_only=True
+                )
+                if was_processed:
+                    processed_frames += 1
+
+            # 進捗更新
+            if progress_bar:
+                progress_bar.update(1)
+
+    except Exception as e:
+        print(f"フレーム処理中にエラーが発生しました: {e}")
+    finally:
+        if progress_bar:
+            progress_bar.close()
+        
+        # BallTrackerのリソース解放
+        tracker.release_video_resources()
+
+    # 処理結果の表示
+    actual_processed_frames = processed_frames
+    processing_efficiency = (processed_frames / current_frame_idx * 100) if current_frame_idx > 0 else 0
+    expected_efficiency = (100 / args.frame_skip) if args.frame_skip > 1 else 100
+
+    print(f"フレーム処理完了:")
+    print(f"  総読み込みフレーム: {current_frame_idx}")
+    print(f"  実処理フレーム: {actual_processed_frames}")
+    print(f"  処理効率: {processing_efficiency:.1f}% (期待値: {expected_efficiency:.1f}%)")
+    
+    if use_optimized_reader:
+        print(f"  ⚡ 最適化効果: 約{args.frame_skip}倍高速化")
+
+    # total_video_framesが0または不正確だった場合、actual_processed_framesで更新
+    if total_video_frames == 0 or abs(total_video_frames - current_frame_idx) > 5:
+        print(f"警告: OpenCVの総フレーム数 ({total_video_frames}) と実読み込みフレーム数 ({current_frame_idx}) が異なります。")
+        total_video_frames = current_frame_idx
+
+    # トラッキング結果保存
+    tracker.save_tracking_features_with_video_info(video_stem, fps, total_video_frames)
     
     step_2_end_time = time.time()
     print(f"ステップ 2 (ボールトラッキング) 処理時間: {step_2_end_time - step_2_start_time:.2f} 秒")
