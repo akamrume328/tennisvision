@@ -14,12 +14,11 @@ from overlay_predictions import PredictionOverlay
 from court_calibrator import CourtCalibrator # 新規インポート
 from hmm_postprocessor import HMMSupervisedPostprocessor # HMM後処理用にインポート
 from typing import Optional # Optional をインポート
-from cut_long_intervals import cut_video_by_point_interval # FFmpeg版をインポート
-from cut_non_rally_segments import cut_non_rally_segments # Rally区間抽出用にインポート
+from cut_non_rally_segments import cut_rally_segments # Rally区間抽出用にインポート
 
 # argparse.Namespaceの代わりに使用するシンプルなクラス
 class PipelineArgs:
-    def __init__(self, video_path, output_dir, frame_skip, imgsz, yolo_model, lstm_model, hmm_model_path, overlay_mode, cut_interval_mode, cut_interval_threshold, extract_rally_mode, rally_buffer_seconds): # rally抽出パラメータを追加
+    def __init__(self, video_path, output_dir, frame_skip, imgsz, yolo_model, lstm_model, hmm_model_path, overlay_mode, extract_rally_mode, rally_buffer_before_seconds, rally_buffer_after_seconds, min_rally_duration_seconds, min_phase_duration_seconds): # rally抽出パラメータを更新
         self.video_path = video_path
         self.output_dir = output_dir
         self.frame_skip = frame_skip
@@ -28,13 +27,17 @@ class PipelineArgs:
         self.lstm_model = lstm_model
         self.hmm_model_path = hmm_model_path # HMMモデルパスを追加
         self.overlay_mode = overlay_mode
-        self.cut_interval_mode = cut_interval_mode # インターバルカットモードを追加
-        self.cut_interval_threshold = cut_interval_threshold # インターバルカットの閾値を追加
         self.extract_rally_mode = extract_rally_mode # Rally区間抽出モードを追加
-        self.rally_buffer_seconds = rally_buffer_seconds # Rally前後のバッファ秒数を追加
+        self.rally_buffer_before_seconds = rally_buffer_before_seconds # Rally前のバッファ秒数
+        self.rally_buffer_after_seconds = rally_buffer_after_seconds # Rally後のバッファ秒数
+        self.min_rally_duration_seconds = min_rally_duration_seconds # 最小Rally区間長を追加
+        self.min_phase_duration_seconds = min_phase_duration_seconds # 最小局面長を追加
 
 def run_pipeline(args):
     pipeline_start_time = time.time() # パイプライン全体の開始時刻
+    
+    # 処理時間記録用の辞書を初期化
+    step_times = {}
 
     video_path = Path(args.video_path)
     video_stem = video_path.stem
@@ -46,10 +49,9 @@ def run_pipeline(args):
     predictions_output_dir = output_dir / "03_lstm_predictions"
     hmm_output_dir = output_dir / "03a_hmm_processed_predictions" # HMM処理結果用ディレクトリ
     final_output_dir = output_dir / "04_final_output"
-    cut_video_output_dir = output_dir / "05_cut_video" # インターバルカットされたビデオ用ディレクトリ
     rally_extract_output_dir = output_dir / "06_rally_extract" # Rally区間抽出されたビデオ用ディレクトリ
 
-    for p_dir in [calibration_output_dir, tracking_output_dir, features_output_dir, predictions_output_dir, hmm_output_dir, final_output_dir, cut_video_output_dir, rally_extract_output_dir]:
+    for p_dir in [calibration_output_dir, tracking_output_dir, features_output_dir, predictions_output_dir, hmm_output_dir, final_output_dir, rally_extract_output_dir]:
         p_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"パイプライン開始: {video_path}")
@@ -100,7 +102,9 @@ def run_pipeline(args):
             cap_calib.release()
 
     step_1_end_time = time.time()
-    print(f"ステップ 1 (コートキャリブレーション) 処理時間: {step_1_end_time - step_1_start_time:.2f} 秒")
+    step_1_duration = step_1_end_time - step_1_start_time
+    step_times["ステップ 1 (コートキャリブレーション)"] = step_1_duration
+    print(f"ステップ 1 (コートキャリブレーション) 処理時間: {step_1_duration:.2f} 秒")
 
 
     court_data_source_dir_for_feature_extraction: Optional[str] = None
@@ -221,7 +225,9 @@ def run_pipeline(args):
     tracker.save_tracking_features_with_video_info(video_stem, fps, total_video_frames)
     
     step_2_end_time = time.time()
-    print(f"ステップ 2 (ボールトラッキング) 処理時間: {step_2_end_time - step_2_start_time:.2f} 秒")
+    step_2_duration = step_2_end_time - step_2_start_time
+    step_times["ステップ 2 (ボールトラッキング)"] = step_2_duration
+    print(f"ステップ 2 (ボールトラッキング) 処理時間: {step_2_duration:.2f} 秒")
 
     tracking_json_files = sorted(list(tracking_output_dir.glob(f"tracking_features_{video_stem}_*.json")), key=lambda p: p.stat().st_mtime, reverse=True)
     if not tracking_json_files:
@@ -248,7 +254,9 @@ def run_pipeline(args):
     features_csv_path = Path(features_csv_path_str)
     print(f"抽出された特徴量を保存しました: {features_csv_path}")
     step_3_end_time = time.time()
-    print(f"ステップ 3 (特徴量抽出) 処理時間: {step_3_end_time - step_3_start_time:.2f} 秒")
+    step_3_duration = step_3_end_time - step_3_start_time
+    step_times["ステップ 3 (特徴量抽出)"] = step_3_duration
+    print(f"ステップ 3 (特徴量抽出) 処理時間: {step_3_duration:.2f} 秒")
 
     # --- ステップ 4: LSTM予測 ---
     print("\n--- ステップ 4: LSTM予測 ---")
@@ -276,7 +284,9 @@ def run_pipeline(args):
     # prediction_csv_path は既に Path オブジェクトなので変換不要
     print(f"予測結果を保存しました: {prediction_csv_path}")
     step_4_end_time = time.time()
-    print(f"ステップ 4 (LSTM予測) 処理時間: {step_4_end_time - step_4_start_time:.2f} 秒")
+    step_4_duration = step_4_end_time - step_4_start_time
+    step_times["ステップ 4 (LSTM予測)"] = step_4_duration
+    print(f"ステップ 4 (LSTM予測) 処理時間: {step_4_duration:.2f} 秒")
 
 
     # --- ステップ 4.5: HMMによる後処理 ---
@@ -334,12 +344,13 @@ def run_pipeline(args):
         print("\nℹ️ HMMモデルパスが指定されていないため、HMM後処理はスキップされました。")
     
     step_4_5_end_time = time.time()
+    step_4_5_duration = step_4_5_end_time - step_4_5_start_time
     if args.hmm_model_path or hmm_processing_done: # HMMパスが指定されたか、実際に処理が試みられた場合のみ時間表示
-        print(f"ステップ 4.5 (HMM後処理) 処理時間: {step_4_5_end_time - step_4_5_start_time:.2f} 秒")
+        step_times["ステップ 4.5 (HMM後処理)"] = step_4_5_duration
+        print(f"ステップ 4.5 (HMM後処理) 処理時間: {step_4_5_duration:.2f} 秒")
 
-
-    # --- ステップ 5: 予測結果のオーバーレイ (インターバルカットモードまたはRally抽出モードが無効な場合のみ) ---
-    if not args.cut_interval_mode and not args.extract_rally_mode:
+    # --- ステップ 5: 予測結果のオーバーレイ (Rally抽出モードが無効な場合のみ) ---
+    if not args.extract_rally_mode:
         print("\n--- ステップ 5: 予測結果のオーバーレイ ---")
         step_5_start_time = time.time()
         # オーバーレイ処理には、HMM処理後のCSV (hmm_processed_csv_path) を使用する
@@ -351,7 +362,7 @@ def run_pipeline(args):
             predictions_csv_dir=str(overlay_input_csv_path_for_step5.parent),
             input_video_dir=str(video_path.parent),
             output_video_dir=str(final_output_dir),
-            video_fps=video_fps, 
+            video_fps=fps,  # video_fps -> fps に修正
             total_frames=total_video_frames,
             frame_skip=args.frame_skip 
         )
@@ -378,53 +389,18 @@ def run_pipeline(args):
                 print(f"不明なオーバーレイモード: {args.overlay_mode}")
 
         step_5_end_time = time.time()
-        print(f"ステップ 5 (予測結果のオーバーレイ) 処理時間: {step_5_end_time - step_5_start_time:.2f} 秒")
+        step_5_duration = step_5_end_time - step_5_start_time
+        step_times["ステップ 5 (予測結果のオーバーレイ)"] = step_5_duration
+        print(f"ステップ 5 (予測結果のオーバーレイ) 処理時間: {step_5_duration:.2f} 秒")
     else:
-        print("\nℹ️ インターバルカットモードまたはRally抽出モードが有効なため、ステップ5 (予測結果のオーバーレイ) はスキップされました。")
+        print("\nℹ️ Rally抽出モードが有効なため、ステップ5 (予測結果のオーバーレイ) はスキップされました。")
 
-    # --- ステップ 6: 長いインターバルのカット (オプション) ---
-    # overlay_input_csv_path はステップ4.5の出力 (hmm_processed_csv_path) を引き続き使用
-    # HMM処理がスキップされた場合はLSTMの予測結果CSVを指す
-    csv_for_cutting_path = hmm_processed_csv_path 
+    # --- ステップ 6: Rally区間の抽出 (オプション) ---
+    csv_for_rally_extraction_path = hmm_processed_csv_path 
 
-    if args.cut_interval_mode:
-        print("\n--- ステップ 6: 長いインターバルのカット ---")
-        step_6_start_time = time.time()
-        
-        input_video_for_cutting_path = video_path # 常に元のビデオをカット対象とする
-        print(f"カット処理の入力として元のビデオを使用: {input_video_for_cutting_path}")
-
-        cut_video_filename = f"{input_video_for_cutting_path.stem}_cut_intervals.mp4"
-        output_cut_video_path = cut_video_output_dir / cut_video_filename
-
-        print(f"カット処理に使用するCSV: {csv_for_cutting_path}")
-        print(f"カットされたビデオの出力先: {output_cut_video_path}")
-        print(f"カット閾値: {args.cut_interval_threshold} 秒")
-
-        success_cut = cut_video_by_point_interval(
-            video_path_str=str(input_video_for_cutting_path),
-            csv_path_str=str(csv_for_cutting_path),
-            output_video_path_str=str(output_cut_video_path),
-            # fps=video_fps, # FFmpeg版では不要
-            threshold_seconds=args.cut_interval_threshold,
-            interval_phase_name="point_interval" 
-        )
-
-        if success_cut:
-            print(f"インターバルカット処理が完了しました。出力ビデオ: {output_cut_video_path}")
-        else:
-            print("インターバルカット処理に失敗しました。")
-        
-        step_6_end_time = time.time()
-        print(f"ステップ 6 (長いインターバルのカット) 処理時間: {step_6_end_time - step_6_start_time:.2f} 秒")
-    # このelseブロックは、cut_interval_modeがfalseの場合のメッセージなので、ステップ5のスキップメッセージとは別に維持
-    # else:
-    #     print("\nℹ️ インターバルカットモードが無効なため、ステップ6はスキップされました。") # このメッセージは不要になるか、cut_interval_modeがFalseの時のステップ5の後に移動
-
-    # --- ステップ 7: Rally区間の抽出 (オプション) ---
     if args.extract_rally_mode:
-        print("\n--- ステップ 7: Rally区間の抽出 ---")
-        step_7_start_time = time.time()
+        print("\n--- ステップ 6: Rally区間の抽出 ---")
+        step_6_start_time = time.time()
         
         input_video_for_rally_extraction = video_path # 常に元のビデオを対象とする
         print(f"Rally抽出処理の入力として元のビデオを使用: {input_video_for_rally_extraction}")
@@ -432,16 +408,19 @@ def run_pipeline(args):
         rally_video_filename = f"{input_video_for_rally_extraction.stem}_rally_only.mp4"
         output_rally_video_path = rally_extract_output_dir / rally_video_filename
 
-        print(f"Rally抽出処理に使用するCSV: {csv_for_cutting_path}")
+        print(f"Rally抽出処理に使用するCSV: {csv_for_rally_extraction_path}")
         print(f"Rally区間抽出ビデオの出力先: {output_rally_video_path}")
-        print(f"Rally前後のバッファ: {args.rally_buffer_seconds} 秒")
+        print(f"Rally前バッファ: {args.rally_buffer_before_seconds} 秒")
+        print(f"Rally後バッファ: {args.rally_buffer_after_seconds} 秒")
 
-        success_rally_extract = cut_non_rally_segments(
-            video_path_str=str(input_video_for_rally_extraction),
-            csv_path_str=str(csv_for_cutting_path),
-            output_video_path_str=str(output_rally_video_path),
-            rally_phase_name="rally",
-            buffer_seconds=args.rally_buffer_seconds
+        success_rally_extract = cut_rally_segments(
+            video_path=Path(input_video_for_rally_extraction),
+            csv_path=Path(csv_for_rally_extraction_path),
+            output_path=output_rally_video_path,
+            buffer_before=args.rally_buffer_before_seconds,
+            buffer_after=args.rally_buffer_after_seconds,
+            min_rally_duration=args.min_rally_duration_seconds,
+            min_phase_duration=args.min_phase_duration_seconds
         )
 
         if success_rally_extract:
@@ -449,20 +428,64 @@ def run_pipeline(args):
         else:
             print("Rally区間抽出処理に失敗しました。")
         
-        step_7_end_time = time.time()
-        print(f"ステップ 7 (Rally区間の抽出) 処理時間: {step_7_end_time - step_7_start_time:.2f} 秒")
+        step_6_end_time = time.time()
+        step_6_duration = step_6_end_time - step_6_start_time
+        step_times["ステップ 6 (Rally区間の抽出)"] = step_6_duration
+        print(f"ステップ 6 (Rally区間の抽出) 処理時間: {step_6_duration:.2f} 秒")
 
     pipeline_end_time = time.time() # パイプライン全体の終了時刻
     total_pipeline_duration = pipeline_end_time - pipeline_start_time
+    step_times["全体パイプライン"] = total_pipeline_duration
     print(f"\nパイプラインが完了しました。")
     print(f"総処理時間: {total_pipeline_duration:.2f} 秒")
+
+    # --- 処理時間レポートの保存 ---
+    print("\n--- 処理時間レポートの保存 ---")
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"processing_time_report_{video_stem}_{timestamp}.txt"
+        report_path = output_dir / report_filename
+        
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write("=" * 60 + "\n")
+            f.write("テニスビデオ分析パイプライン 処理時間レポート\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"ビデオファイル: {video_path}\n")
+            f.write(f"実行日時: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n")
+            f.write(f"フレームスキップ: {args.frame_skip}\n")
+            f.write(f"画像サイズ: {args.imgsz}\n")
+            f.write(f"YOLOモデル: {args.yolo_model}\n")
+            f.write(f"LSTMモデル: {args.lstm_model}\n")
+            f.write(f"HMMモデル: {args.hmm_model_path if args.hmm_model_path else '使用なし'}\n")
+            f.write(f"オーバーレイモード: {args.overlay_mode}\n")
+            f.write(f"Rally抽出モード: {'有効' if args.extract_rally_mode else '無効'}\n")
+            if args.extract_rally_mode:
+                f.write(f"Rally前バッファ: {args.rally_buffer_before_seconds} 秒\n")
+                f.write(f"Rally後バッファ: {args.rally_buffer_after_seconds} 秒\n")
+            f.write("\n" + "-" * 60 + "\n")
+            f.write("各ステップの処理時間\n")
+            f.write("-" * 60 + "\n\n")
+            
+            for step_name, duration in step_times.items():
+                if step_name == "全体パイプライン":
+                    continue
+                f.write(f"{step_name:<30}: {duration:>8.2f} 秒\n")
+            
+            f.write("\n" + "-" * 60 + "\n")
+            f.write(f"{'総処理時間':<30}: {total_pipeline_duration:>8.2f} 秒\n")
+            f.write("=" * 60 + "\n")
+        
+        print(f"処理時間レポートを保存しました: {report_path}")
+        
+    except Exception as e:
+        print(f"処理時間レポートの保存中にエラーが発生しました: {e}")
 
 if __name__ == "__main__":
     print("テニスビデオ分析パイプラインへようこそ！")
     print("いくつかの情報を入力してください。デフォルト値を使用する場合はEnterキーを押してください。")
 
     video_path_str = ""
-    raw_data_dir = Path("../data/raw")
+    raw_data_dir = Path("./data/raw")
     video_files = []
 
     if raw_data_dir.exists() and raw_data_dir.is_dir():
@@ -504,30 +527,33 @@ if __name__ == "__main__":
 
     output_dir_str = input("出力ディレクトリ (デフォルト: ./tennis_pipeline_output): ").strip() or "./tennis_pipeline_output"
     
-    frame_skip_str = input("フレームスキップ (デフォルト: 1): ").strip() or "1"
+    frame_skip_str = input("フレームスキップ (デフォルト: 10): ").strip() or "10"
     try:
         frame_skip_int = int(frame_skip_str)
         if frame_skip_int < 1:
-            print("フレームスキップは1以上である必要があります。デフォルトの1を使用します。")
+            print("フレームスキップは1以上である必要があります。デフォルトの10を使用します。")
             frame_skip_int = 1
     except ValueError:
         print("無効なフレームスキップ値です。デフォルトの1を使用します。")
         frame_skip_int = 1
 
-    imgsz_str = input("YOLOモデル推論時の画像サイズ (デフォルト: 640): ").strip() or "640"
+    imgsz_str = input("YOLOモデル推論時の画像サイズ (デフォルト: 1920): ").strip() or "1920"
     try:
         imgsz_int = int(imgsz_str)
     except ValueError:
-        print("無効な画像サイズです。デフォルトの640を使用します。")
-        imgsz_int = 640
+        print("無効な画像サイズです。デフォルトの1920を使用します。")
+        imgsz_int = 1920
 
     yolo_model_str = ""
-    models_weights_dir = Path("../models/weights")
+    models_weights_dir = Path("./models/yolo_model")
     pt_files = []
 
     if models_weights_dir.exists() and models_weights_dir.is_dir():
         print(f"\n利用可能なYOLOモデルファイル ({models_weights_dir}):")
         for i, file_path in enumerate(models_weights_dir.iterdir()):
+            if file_path.is_file() and file_path.suffix.lower() == ".engine":
+                pt_files.append(file_path)
+                print(f"  {len(pt_files)}. {file_path.name}")
             if file_path.is_file() and file_path.suffix.lower() == ".pt":
                 pt_files.append(file_path)
                 print(f"  {len(pt_files)}. {file_path.name}")
@@ -571,7 +597,7 @@ if __name__ == "__main__":
              print(f"警告: デフォルトのYOLOモデル 'yolov8n.pt' がカレントディレクトリまたは指定パスに見つかりません。")
 
     lstm_model_str = ""
-    lstm_models_base_dir = Path("./training_data/lstm_models")
+    lstm_models_base_dir = Path("./models")
     lstm_model_folders = []
 
     if lstm_models_base_dir.exists() and lstm_models_base_dir.is_dir():
@@ -611,7 +637,7 @@ if __name__ == "__main__":
                  # 存在しないパスも許可するが警告は表示（LSTMPredictorPlaceholderでも再度チェックされる）
 
     hmm_model_path_str = ""
-    hmm_models_base_dir = Path("./training_data/hmm_models")
+    hmm_models_base_dir = Path("./models/hmm_model")
     hmm_model_files = []
 
     if hmm_models_base_dir.exists() and hmm_models_base_dir.is_dir():
@@ -662,45 +688,58 @@ if __name__ == "__main__":
         if overlay_mode_str not in valid_overlay_modes:
             print(f"無効なオーバーレイモードです。{', '.join(valid_overlay_modes)} のいずれかを入力してください。")
 
-    cut_interval_mode_input = input("長いインターバルをカットしますか？ (yes/no, デフォルト: no): ").strip().lower()
-    cut_interval_mode_bool = cut_interval_mode_input == 'yes'
-    
-    cut_interval_threshold_float = 2.0 # デフォルト値
-    if cut_interval_mode_bool:
-        threshold_str = input("インターバルカットの閾値（秒、デフォルト: 2.0）: ").strip()
-        if threshold_str:
-            try:
-                cut_interval_threshold_float = float(threshold_str)
-                if cut_interval_threshold_float <= 0:
-                    print("閾値は正の数である必要があります。デフォルトの2.0秒を使用します。")
-                    cut_interval_threshold_float = 2.0
-            except ValueError:
-                print("無効な閾値です。デフォルトの2.0秒を使用します。")
-                cut_interval_threshold_float = 2.0
-
     extract_rally_mode_input = input("Rally区間のみを抽出しますか？ (yes/no, デフォルト: no): ").strip().lower()
     extract_rally_mode_bool = extract_rally_mode_input == 'yes'
     
-    rally_buffer_seconds_float = 2.0 # デフォルト値
+    rally_buffer_before_seconds_float = 2.0 # デフォルト値
+    rally_buffer_after_seconds_float = 2.0 # デフォルト値
+    min_rally_duration_seconds_float = 2.0 # 最小Rally区間長のデフォルト値
+    min_phase_duration_seconds_float = 0.5 # 最小局面長のデフォルト値
+    
     if extract_rally_mode_bool:
-        buffer_str = input("Rally区間の前後に保持する秒数（デフォルト: 2.0）: ").strip()
-        if buffer_str:
+        buffer_before_str = input("Rally区間の前に保持する秒数（デフォルト: 2.0）: ").strip()
+        if buffer_before_str:
             try:
-                rally_buffer_seconds_float = float(buffer_str)
-                if rally_buffer_seconds_float < 0:
-                    print("バッファ秒数は0以上である必要があります。デフォルトの2.0秒を使用します。")
-                    rally_buffer_seconds_float = 2.0
+                rally_buffer_before_seconds_float = float(buffer_before_str)
+                if rally_buffer_before_seconds_float < 0:
+                    print("Rally前バッファ秒数は0以上である必要があります。デフォルトの2.0秒を使用します。")
+                    rally_buffer_before_seconds_float = 2.0
             except ValueError:
-                print("無効なバッファ秒数です。デフォルトの2.0秒を使用します。")
-                rally_buffer_seconds_float = 2.0    # インターバルカットとRally抽出の両方が選択された場合の警告
-    if cut_interval_mode_bool and extract_rally_mode_bool:
-        print("警告: インターバルカットとRally抽出の両方が選択されています。")
-        print("両方の処理が実行されますが、通常はどちらか一方を選択することを推奨します。")
-        confirm = input("続行しますか？ (yes/no): ").strip().lower()
-        if confirm != 'yes':
-            print("処理を中止します。")
-            exit()
+                print("無効なRally前バッファ秒数です。デフォルトの2.0秒を使用します。")
+                rally_buffer_before_seconds_float = 2.0
 
+        buffer_after_str = input("Rally区間の後に保持する秒数（デフォルト: 2.0）: ").strip()
+        if buffer_after_str:
+            try:
+                rally_buffer_after_seconds_float = float(buffer_after_str)
+                if rally_buffer_after_seconds_float < 0:
+                    print("Rally後バッファ秒数は0以上である必要があります。デフォルトの2.0秒を使用します。")
+                    rally_buffer_after_seconds_float = 2.0
+            except ValueError:
+                print("無効なRally後バッファ秒数です。デフォルトの2.0秒を使用します。")
+                rally_buffer_after_seconds_float = 2.0
+
+        min_rally_duration_str = input("最小Rally区間長（秒）（デフォルト: 2.0）: ").strip()
+        if min_rally_duration_str:
+            try:
+                min_rally_duration_seconds_float = float(min_rally_duration_str)
+                if min_rally_duration_seconds_float < 0:
+                    print("最小Rally区間長は0以上である必要があります。デフォルトの2.0秒を使用します。")
+                    min_rally_duration_seconds_float = 2.0
+            except ValueError:
+                print("無効な最小Rally区間長です。デフォルトの2.0秒を使用します。")
+                min_rally_duration_seconds_float = 2.0
+
+        min_phase_duration_str = input("最小局面長（秒）（デフォルト: 0.5）: ").strip()
+        if min_phase_duration_str:
+            try:
+                min_phase_duration_seconds_float = float(min_phase_duration_str)
+                if min_phase_duration_seconds_float < 0:
+                    print("最小局面長は0以上である必要があります。デフォルトの0.5秒を使用します。")
+                    min_phase_duration_seconds_float = 0.5
+            except ValueError:
+                print("無効な最小局面長です。デフォルトの0.5秒を使用します。")
+                min_phase_duration_seconds_float = 0.5
 
     # PipelineArgsオブジェクトを作成
     pipeline_args = PipelineArgs(
@@ -712,10 +751,11 @@ if __name__ == "__main__":
         lstm_model=lstm_model_str,
         hmm_model_path=hmm_model_path_str, # HMMモデルパスを渡す
         overlay_mode=overlay_mode_str,
-        cut_interval_mode=cut_interval_mode_bool, # インターバルカットモード
-        cut_interval_threshold=cut_interval_threshold_float, # インターバルカット閾値
         extract_rally_mode=extract_rally_mode_bool, # Rally区間抽出モード
-        rally_buffer_seconds=rally_buffer_seconds_float # Rally前後のバッファ秒数
+        rally_buffer_before_seconds=rally_buffer_before_seconds_float, # Rally前のバッファ秒数
+        rally_buffer_after_seconds=rally_buffer_after_seconds_float, # Rally後のバッファ秒数
+        min_rally_duration_seconds=min_rally_duration_seconds_float, # 最小Rally区間長を追加
+        min_phase_duration_seconds=min_phase_duration_seconds_float # 最小局面長を追加
     )
     
     run_pipeline(pipeline_args)

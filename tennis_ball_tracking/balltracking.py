@@ -197,56 +197,54 @@ class OptimizedFrameReader:
             print(f"📊 フレームスキップ{self.frame_skip}: 処理予定フレーム数 {expected_processing_frames}")
     
     def _background_reader(self):
-        """バックグラウンドでフレームを読み込むスレッド"""
-        frame_counter = 0
-        
-        while not self.stop_reading.is_set():
-            try:
-                # 処理対象フレームまでスキップ
-                skip_start_time = time.perf_counter()
-                frames_to_skip = self.frame_skip - 1
-                
-                for _ in range(frames_to_skip):
-                    ret = self.cap.grab()  # grab()は高速（フレームをデコードしない）
-                    if not ret:
-                        return
-                    frame_counter += 1
-                    self.frames_skipped += 1
-                
-                self.skip_time_total += time.perf_counter() - skip_start_time
-                
-                # 処理対象フレームを読み込み
-                read_start_time = time.perf_counter()
-                ret, frame = self.cap.read()
-                self.read_time_total += time.perf_counter() - read_start_time
-                
-                if not ret:
-                    break
-                
-                frame_counter += 1
-                self.frames_read += 1
-                
-                # キューに追加（ノンブロッキング）
+            """バックグラウンドでフレームを読み込むスレッド（バックプレッシャー機構付き）"""
+            frame_counter = 0
+            
+            while not self.stop_reading.is_set():
                 try:
-                    self.frame_queue.put((frame, frame_counter), timeout=0.1)
-                except queue.Full:
-                    # バッファが満杯の場合は古いフレームを破棄
-                    try:
-                        self.frame_queue.get_nowait()
-                        self.frame_queue.put((frame, frame_counter), timeout=0.1)
-                    except (queue.Empty, queue.Full):
+                    # --- ★★★ バックプレッシャー機構 ★★★ ---
+                    # キューがバッファの半分以上埋まっていたら、処理が追いつくのを少し待つ
+                    # これにより、読み込みスレッドが暴走してキューを溢れさせるのを防ぐ
+                    if self.frame_queue.qsize() > self.buffer_size / 2:
+                        time.sleep(0.01)  # 10ミリ秒待機して、再度ループの先頭からチェック
                         continue
-                        
-            except Exception as e:
-                print(f"フレーム読み込みエラー: {e}")
-                break
-        
-        # 終了シグナル
-        try:
-            self.frame_queue.put((None, -1), timeout=0.1)
-        except queue.Full:
-            pass
-    
+
+                    # --- フレームスキップ処理 ---
+                    if self.frame_skip > 1:
+                        frames_to_skip = self.frame_skip - 1
+                        for _ in range(frames_to_skip):
+                            ret = self.cap.grab()
+                            if not ret:
+                                self.stop_reading.set()
+                                break
+                            frame_counter += 1
+                    
+                    if self.stop_reading.is_set():
+                        break
+                    
+                    # --- 処理対象フレームの読み込み ---
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        break # ビデオ終了
+                    
+                    frame_counter += 1
+                    
+                    # --- キューへの追加 ---
+                    # バックプレッシャーにより、このputが長時間ブロックされることはない
+                    self.frame_queue.put((frame, frame_counter))
+
+                except Exception as e:
+                    print(f"フレーム読み込み中に予期せぬエラーが発生しました。")
+                    import traceback
+                    traceback.print_exc()
+                    break
+            
+            # --- 終了処理 ---
+            try:
+                self.frame_queue.put((None, -1))
+            except Exception:
+                pass
+
     def start_reading(self):
         """非同期読み込み開始"""
         if self.reading_active:
