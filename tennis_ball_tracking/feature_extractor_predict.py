@@ -1024,7 +1024,9 @@ class TennisInferenceFeatureExtractor:
         if features_df.empty:
             print("❌ DataFrame作成に失敗しました")
             return pd.DataFrame()
-        
+        if 'frame_number' in features_df.columns:
+            features_df['original_frame_number'] = features_df['frame_number']
+
         features_df['frame_number'] = range(len(features_df))
         features_df['video_name'] = video_name
         if 'interpolated' not in features_df.columns:

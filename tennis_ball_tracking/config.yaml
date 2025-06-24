@@ -1,0 +1,38 @@
+# config.yaml
+# テニス局面分類LSTMモデルの学習設定ファイル
+
+# --- データ設定 ---
+training_data_dir: "training_data"
+sequence_length: 30
+overlap_ratio: 0.5
+sample_ratio: 1.0 # 1.0で全データ使用
+
+# --- モデル設定 ---
+model_type: "bidirectional"  # "simple", "bidirectional", "stacked" から選択
+lstm_units: [256, 128]
+dropout_rate: 0.3
+enable_confidence_weighting: true
+
+# --- 学習設定 ---
+learning_rate: 0.001
+batch_size: 64
+epochs: 150       # 全データでの最終学習時のエポック数
+patience: 25      # 早期停止のpatience
+
+# --- 交差検証設定 ---
+# n_splitsを1にすると、交差検証を行わず通常の学習・評価のみ実行
+n_splits: 5
+
+# --- 実行モード ---
+# 'cv_only': 交差検証での評価のみ行い、最終モデルの学習はスキップ
+# 'full': 交差検証後、全データで最終モデルを学習・保存
+execution_mode: 'full' 
+
+# --- CPU実行時のオーバーライド設定 ---
+# GPUが利用できない場合に、以下の設定が上記の設定を上書きします
+cpu_settings:
+  sequence_length: 20
+  lstm_units: [128, 64]
+  batch_size: 32
+  epochs: 100
+  patience: 15

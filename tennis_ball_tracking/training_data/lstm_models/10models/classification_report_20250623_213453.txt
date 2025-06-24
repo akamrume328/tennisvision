@@ -1,0 +1,20 @@
+Classification Report (20250623_213453)
+==============================
+Model Type: bidirectional
+Test Accuracy: 0.9589
+F1 Score (Weighted): 0.9589
+==============================
+
+                   precision    recall  f1-score   support
+
+   point_interval       0.97      0.96      0.96       988
+            rally       0.95      0.96      0.95       439
+serve_front_deuce       0.93      0.92      0.92       133
+   serve_front_ad       0.94      0.92      0.93       104
+ serve_back_deuce       0.99      0.97      0.98        72
+    serve_back_ad       0.90      0.97      0.93        72
+       changeover       0.99      1.00      1.00       163
+
+         accuracy                           0.96      1971
+        macro avg       0.95      0.96      0.95      1971
+     weighted avg       0.96      0.96      0.96      1971

@@ -25,7 +25,6 @@ class TennisFeatureExtractor:
         self.phase_labels = [
             "point_interval",           # 0: ポイント間
             "rally",                   # 1: ラリー中
-            "serve_preparation",       # 2: サーブ準備
             "serve_front_deuce",      # 3: 手前デュースサイドからのサーブ
             "serve_front_ad",         # 4: 手前アドサイドからのサーブ
             "serve_back_deuce",       # 5: 奥デュースサイドからのサーブ

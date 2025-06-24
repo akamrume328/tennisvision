@@ -291,21 +291,41 @@ class HMMSupervisedPostprocessor:
         Returns:
             bool: パラメータ計算が成功した場合はTrue、そうでない場合はFalse。
         """
-        if self.valid_observations_int is None or self.valid_true_labels_int is None: # 学習には真ラベルが必須
-            print("❌エラー: HMMパラメータ計算のための観測シーケンスまたは真のラベルシーケンスがありません。")
-            return False
-        if len(self.valid_observations_int) != len(self.valid_true_labels_int): # 学習には真ラベルが必須
-            print("❌エラー: 観測シーケンスと真のラベルシーケンスの長さが一致しません。")
-            return False
-        if self.n_states == 0:
-            print("❌エラー: HMMの状態数が0です。load_dataでラベルが正しく読み込まれているか確認してください。")
-            return False
-        if len(self.valid_true_labels_int) < 2: # 遷移確率の計算に最低2つの要素が必要
-            print("❌エラー: HMMパラメータ計算のためには、真のラベルシーケンス長が2以上である必要があります。")
+        # 入力値の検証
+        if self.valid_true_labels_int is None or self.valid_observations_int is None:
+            print("❌ エラー: 学習に必要なデータ（真ラベルまたは観測データ）が設定されていません。")
             return False
 
+        # 状態数とデータ一貫性チェック
+        unique_labels = np.unique(self.valid_true_labels_int)
+        if len(unique_labels) > self.n_states:
+            print(f"❌ エラー: 真ラベルの一意値数({len(unique_labels)})が定義済み状態数({self.n_states})を超えています。")
+            return False
 
         print(f"\n--- HMMパラメータ計算開始 (教師あり学習、状態数: {self.n_states}) ---")
+        
+        # データ分布の確認を追加
+        if self.verbose:
+            print(f"\n--- 学習データのラベル分布確認 ---")
+            unique_labels, counts = np.unique(self.valid_true_labels_int, return_counts=True)
+            print(f"  学習データに含まれる状態:")
+            for label_int, count in zip(unique_labels, counts):
+                label_str = self.int_to_label.get(label_int, f"UNKNOWN({label_int})")
+                print(f"    {label_str} (インデックス {label_int}): {count} 件")
+            
+            print(f"\n  全状態の定義:")
+            for i in range(self.n_states):
+                label_str = self.int_to_label.get(i, f"UNKNOWN({i})")
+                print(f"    {label_str} (インデックス {i})")
+            
+            missing_states = []
+            for i in range(self.n_states):
+                if i not in unique_labels:
+                    missing_states.append(self.int_to_label.get(i, f"UNKNOWN({i})"))
+            if missing_states:
+                print(f"\n  ⚠️ 学習データに含まれていない状態: {missing_states}")
+                print(f"     これらの状態はHMMの出力確率でスムージング値のみが適用されます。")
+
         try:
             n_states = self.n_states
             n_symbols = self.n_states
@@ -1012,40 +1032,33 @@ if __name__ == "__main__":
 
 
     forbidden_transitions_config = [
-        ('point_interval', 'serve_front_ad'),
-        ('point_interval', 'serve_back_ad'),
-        ('point_interval', 'serve_front_duece'),
-        ('point_interval', 'serve_back_duece'),
         ('point_interval', 'rally'),
         ('rally', 'serve_preparation'),
         ('rally', 'serve_front_ad'),
         ('rally', 'serve_back_ad'),
-        ('rally', 'serve_front_duece'),
-        ('rally', 'serve_back_duece'),
-        ('serve_preparation', 'point_interval'),
-        ('serve_preparation', 'rally'),
-        ('serve_preparation', 'changeover'),
-        ('serve_front_duece', 'serve_back_duece'),
-        ('serve_front_duece', 'serve_front_ad'),
-        ('serve_front_duece', 'serve_back_ad'),
-        ('serve_front_duece', 'changeover'),    # 不足していた要素を追加
+        ('rally', 'serve_front_deuce'),
+        ('rally', 'serve_back_deuce'),
+        ('serve_front_deuce', 'serve_back_deuce'),
+        ('serve_front_deuce', 'serve_front_ad'),
+        ('serve_front_deuce', 'serve_back_ad'),
+        ('serve_front_deuce', 'changeover'),    # 不足していた要素を追加
         ('serve_front_ad', 'serve_back_ad'),
-        ('serve_front_ad', 'serve_front_duece'),
-        ('serve_front_ad', 'serve_back_duece'),
+        ('serve_front_ad', 'serve_front_deuce'),
+        ('serve_front_ad', 'serve_back_deuce'),
         ('serve_front_ad', 'changeover'), 
-        ('serve_back_duece', 'serve_front_duece'),
-        ('serve_back_duece', 'serve_front_ad'),
-        ('serve_back_duece', 'serve_back_ad'),
-        ('serve_back_duece', 'changeover'),
-        ('serve_back_ad', 'serve_front_duece'),
+        ('serve_back_deuce', 'serve_front_deuce'),
+        ('serve_back_deuce', 'serve_front_ad'),
+        ('serve_back_deuce', 'serve_back_ad'),
+        ('serve_back_deuce', 'changeover'),
+        ('serve_back_ad', 'serve_front_deuce'),
         ('serve_back_ad', 'serve_front_ad'),
-        ('serve_back_ad', 'serve_back_duece'),
+        ('serve_back_ad', 'serve_back_deuce'),
         ('serve_back_ad', 'changeover'),
         ('changeover', 'rally'),
         ('changeover', 'serve_front_ad'),
         ('changeover', 'serve_back_ad'), 
-        ('changeover', 'serve_front_duece'),
-        ('changeover', 'serve_back_duece'),
+        ('changeover', 'serve_front_deuce'),
+        ('changeover', 'serve_back_deuce'),
     ]
 
     # ------------------------------------
