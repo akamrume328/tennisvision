@@ -209,10 +209,11 @@ class TennisLSTMPredictor:
 
             confidence_scores = None
             if self.model and self.model.enable_confidence_weighting:
-                if 'interpolation_confidence' in df.columns:
-                    confidence_scores = df['interpolation_confidence'].fillna(1.0).astype(np.float32).values
+                if 'interpolation_ratio' in df.columns:
+                    confidence_scores = (1.0 - df['interpolation_ratio'].fillna(0)).astype(np.float32).values
                 else:
                     confidence_scores = np.ones(len(df), dtype=np.float32)
+                    print("⚠️ 'interpolation_ratio'列が見つからないため、信頼度重み付けなしで処理します。")
             
             print(f"✅ データ前処理完了。フレーム数: {len(df)}")
             return X_scaled, df, confidence_scores

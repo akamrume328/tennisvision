@@ -1,0 +1,51 @@
+# LightGBMモデルの学習設定ファイル
+
+# --- データ設定 ---
+training_data_dir: "training_data"
+# テストデータの割合 (0.2 = 20%)
+test_size: 0.2
+# 乱数シード（再現性の確保のため）
+random_state: 42
+
+feature_list_path: 'lgbm_models/top_100_features.txt'
+
+# --- モデル保存設定 ---
+# 学習済みモデルや結果を保存するディレクトリ名
+output_dir: "lgbm_models"
+
+# --- LightGBM パラメータ ---
+lgbm_params:
+  #GPU利用
+  device: 'gpu'  # 'cpu' または 'gpu'
+  # 目的：'multiclass'（多クラス分類）を指定
+  objective: 'multiclass'
+  # 評価指標：'multi_logloss'（多クラス対数損失）
+  metric: 'multi_logloss'
+  # 木の数（多いと過学習のリスク、少ないと学習不足のリスク）
+  n_estimators: 1000
+  # 学習率（小さいほど慎重に学習する）
+  learning_rate: 0.05
+  # 1つの木の最大葉の数
+  num_leaves: 31
+  # 木の最大深さ
+  max_depth: -1
+  # 特徴量のランダムサンプリング率
+  feature_fraction: 0.8
+  # データのランダムサンプリング率
+  bagging_fraction: 0.8
+  # データサンプリングの頻度
+  bagging_freq: 1
+  # L1正則化
+  lambda_l1: 0.1
+  # L2正則化
+  lambda_l2: 0.1
+  # 使用するCPUコア数 (-1は全コア使用)
+  n_jobs: -1
+  # シード値
+  seed: 42
+  # 詳細なログの非表示
+  verbosity: -1
+  
+# --- 早期停止設定 ---
+# 何ステップ性能が改善しなかったら学習を打ち切るか
+early_stopping_rounds: 50

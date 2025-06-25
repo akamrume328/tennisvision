@@ -1,0 +1,62 @@
+# config_experiments.yaml
+# 複数モデルの自動検証用設定ファイル
+
+# --- 全実験で共通の設定 ---
+training_data_dir: "training_data"
+sequence_length: 30
+overlap_ratio: 0.5
+sample_ratio: 1.0 # 1.0で全データ使用
+
+# --- 学習に関する共通設定 ---
+learning_rate: 0.001
+epochs: 150
+patience: 25
+
+# --- 交差検証に関する共通設定 ---
+n_splits: 5
+execution_mode: 'full' # 'full' または 'cv_only'
+
+# --- CPU実行時の共通オーバーライド設定 ---
+cpu_settings:
+  sequence_length: 20
+  batch_size: 32
+  epochs: 100
+  patience: 15
+  # 注意：以下のlstm_unitsは実験ごとに上書きされます
+  lstm_units: [64]
+
+# -----------------------------------------------------------------------------
+# --- ▼ ここから下に、試したいモデルの組み合わせをリストで記述します ▼ ---
+# -----------------------------------------------------------------------------
+model_experiments:
+  - name: "SeqHunt_Seq10_LSTM32"
+    model_type: "simple"
+    sequence_length: 10
+    lstm_units: [32]
+    dropout_rate: 0.2
+    enable_confidence_weighting: false
+    batch_size: 128
+
+  - name: "SeqHunt_5_LSTM32"
+    model_type: "simple"
+    sequence_length: 5
+    lstm_units: [32]
+    dropout_rate: 0.2
+    enable_confidence_weighting: false
+    batch_size: 128
+
+  - name: "SeqHunt_Seq2_LSTM32"
+    model_type: "simple"
+    sequence_length: 2
+    lstm_units: [32]
+    dropout_rate: 0.2
+    enable_confidence_weighting: false
+    batch_size: 128
+
+  - name: "SeqHunt_Seq10_LSTM16"
+    model_type: "simple"
+    sequence_length: 10
+    lstm_units: [16]
+    dropout_rate: 0.2
+    enable_confidence_weighting: false
+    batch_size: 128

@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple, Optional, Any
 import warnings
 import argparse
 import yaml
+import time
+import copy
 
 warnings.filterwarnings('ignore')
 
@@ -28,7 +30,7 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.cuda.amp import GradScaler, autocast
 
-from model import TennisLSTMModel  # モデル定義をインポート
+from model import TennisLSTMModel  # model.py は変更なしでそのまま利用します
 
 # ===== 設定読み込み =====
 def load_config(path: str) -> Dict:
@@ -37,11 +39,6 @@ def load_config(path: str) -> Dict:
         with open(path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         print(f"設定ファイルを読み込みました: {path}")
-
-        if not torch.cuda.is_available() and 'cpu_settings' in config:
-            print("警告: GPUが利用できません。CPU用の設定で上書きします。")
-            config.update(config['cpu_settings'])
-            
         return config
     except FileNotFoundError:
         print(f"エラー: 設定ファイルが見つかりません: {path}")
@@ -49,7 +46,6 @@ def load_config(path: str) -> Dict:
     except Exception as e:
         print(f"エラー: 設定ファイルの読み込み中にエラーが発生しました: {e}")
         raise
-
 
 # ===== GPU設定 =====
 def setup_gpu_config():
@@ -84,9 +80,14 @@ class TennisLSTMTrainer:
     
     def __init__(self, config: Dict):
         self.config = config
-        self.training_data_dir = Path(self.config['training_data_dir'])
-        self.features_dir = self.training_data_dir / "features"
-        self.models_dir = self.training_data_dir / "lstm_models"
+        self.experiment_name = self.config.get('name', 'default_experiment')
+        
+        # --- ★★★ 変更点 ★★★ ---
+        # 保存先ディレクトリを実験名ごとに分ける
+        self.base_dir = Path(self.config['training_data_dir'])
+        self.experiment_dir = self.base_dir / "experiments" / self.experiment_name
+        self.features_dir = self.base_dir / "features"
+        self.models_dir = self.experiment_dir / "models" # モデルは実験フォルダ内に保存
         
         self._setup_directories()
         
@@ -102,20 +103,22 @@ class TennisLSTMTrainer:
         self.label_map: Optional[Dict[int, int]] = None
         self.active_phase_labels: Optional[List[str]] = None
         
-        print("PyTorch LSTM学習器（交差検証対応）初期化完了")
-        print(f"データディレクトリ: {self.training_data_dir}")
-        print(f"使用デバイス: {DEVICE}")
+        print(f"[{self.experiment_name}] PyTorch LSTM学習器 初期化完了")
+        print(f"[{self.experiment_name}] データディレクトリ: {self.base_dir}")
+        print(f"[{self.experiment_name}] 結果保存先: {self.experiment_dir}")
+        print(f"[{self.experiment_name}] 使用デバイス: {DEVICE}")
 
     def _setup_directories(self):
         """ディレクトリの設定"""
-        self.training_data_dir.mkdir(exist_ok=True)
+        self.base_dir.mkdir(exist_ok=True)
         self.features_dir.mkdir(exist_ok=True)
-        self.models_dir.mkdir(exist_ok=True)
+        self.experiment_dir.mkdir(parents=True, exist_ok=True)
+        self.models_dir.mkdir(parents=True, exist_ok=True)
 
     def load_dataset(self, csv_path: str = None) -> Tuple[pd.DataFrame, bool]:
-        """データセットの読み込み"""
+        # このメソッドは元のスクリプトから変更ありません
         if not csv_path:
-            all_files = list(self.features_dir.glob("*.csv")) + list(self.training_data_dir.glob("*.csv"))
+            all_files = list(self.features_dir.glob("*.csv")) + list(self.base_dir.glob("*.csv"))
             if not all_files:
                 print("エラー: 特徴量データセットファイルが見つかりません。")
                 return pd.DataFrame(), False
@@ -132,7 +135,7 @@ class TennisLSTMTrainer:
             
             df = pd.read_csv(dataset_path)
             
-            if self.config['sample_ratio'] < 1.0:
+            if self.config.get('sample_ratio', 1.0) < 1.0:
                 print(f"データを {self.config['sample_ratio']*100:.0f}%にサンプリングします。")
                 df = df.sample(frac=self.config['sample_ratio'], random_state=42).reset_index(drop=True)
 
@@ -142,6 +145,10 @@ class TennisLSTMTrainer:
             print(f"データセット読み込みエラー: {e}")
             return pd.DataFrame(), False
 
+    # _validate_and_clean_labels, prepare_sequences, build_model, _train_epoch, _validate_epoch, _train_and_evaluate_fold, _evaluate_model_on_test
+    # までのメソッドは元のスクリプトから変更ありません。
+    # 以下に、元のスクリプトの該当部分をそのままコピー＆ペーストしてください。
+    # (ここでは簡潔にするため省略します)
     def _validate_and_clean_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """ラベル値の検証と修正"""
         original_count = len(df)
@@ -151,7 +158,10 @@ class TennisLSTMTrainer:
         df['label'] = df['label'].astype(int)
         
         final_count = len(df)
-        print(f"ラベル検証・修正完了。データ保持率: {(final_count/original_count)*100:.1f}%")
+        if original_count > 0:
+            print(f"ラベル検証・修正完了。データ保持率: {(final_count/original_count)*100:.1f}%")
+        else:
+            print("ラベル検証・修正完了。入力データが空でした。")
         return df
 
     def prepare_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
@@ -169,18 +179,16 @@ class TennisLSTMTrainer:
         confidence_scores = None
         if self.config.get('enable_confidence_weighting', False):
             if 'interpolation_ratio' in df_cleaned.columns:
-                # 補間率(ratio)が高いほど信頼度は低いので、(1 - ratio)をスコアとする
                 confidence_scores = (1.0 - df_cleaned['interpolation_ratio'].fillna(0)).values
                 print("✅ 'interpolation_ratio' に基づいて信頼度スコアを生成しました。")
             else:
-                # 列がない場合は、重み付けなし（信頼度1.0）で実行
                 confidence_scores = np.ones(len(df_cleaned))
                 print("⚠️ 'interpolation_ratio'列が見つからないため、信頼度重み付けは実質的に無効です。")
         else:
              print("ℹ️ 信頼度重み付けは設定で無効になっています。")
 
         sequences, sequence_labels, confidence_sequences = [], [], []
-        step_size = max(1, int(self.config['sequence_length'] * (1 - self.config['overlap_ratio'])))
+        step_size = max(1, int(self.config['sequence_length'] * (1 - self.config.get('overlap_ratio', 0.5))))
 
         for video in pd.unique(video_names):
             mask = video_names == video
@@ -195,11 +203,9 @@ class TennisLSTMTrainer:
         
         print(f"作成されたシーケンス数: {len(sequences)}")
         
-        # confidence_sequencesが空でなければnumpy配列に変換
         conf_array = np.array(confidence_sequences) if confidence_sequences else None
         
         return np.array(sequences), np.array(sequence_labels), conf_array, feature_columns
-
 
     def build_model(self, input_size: int, num_classes: int) -> TennisLSTMModel:
         """PyTorch LSTMモデルの構築"""
@@ -210,68 +216,66 @@ class TennisLSTMTrainer:
             'dropout_rate': self.config['dropout_rate'],
             'model_type': self.config['model_type'],
             'use_batch_norm': self.config['batch_size'] > 1,
-            'enable_confidence_weighting': self.config['enable_confidence_weighting']
+            'enable_confidence_weighting': self.config.get('enable_confidence_weighting', False)
         }
         model = TennisLSTMModel(**model_config).to(DEVICE)
         total_params = sum(p.numel() for p in model.parameters())
-        print(f"{self.config['model_type']}モデル構築完了: {total_params:,} パラメータ")
+        print(f"[{self.experiment_name}] {self.config['model_type']}モデル構築完了: {total_params:,} パラメータ")
         return model
 
     def _train_epoch(self, model, train_loader, criterion, optimizer, scaler):
-            model.train()
-            total_loss, total_correct, total_samples = 0, 0, 0
-            for batch in train_loader:
-                # --- ここから修正 ---
-                # モデルに渡す前に、すべてのテンソルをGPUに移動させる
-                X_batch = batch[0].to(DEVICE)
-                y_batch = batch[1].to(DEVICE)
-                conf_data = batch[2].to(DEVICE) if len(batch) == 3 else None
-                # --- ここまで修正 ---
+        model.train()
+        total_loss, total_correct, total_samples = 0, 0, 0
+        for batch in train_loader:
+            X_batch, y_batch = batch[0].to(DEVICE), batch[1].to(DEVICE)
+            conf_data = batch[2].to(DEVICE) if len(batch) > 2 else None
 
-                optimizer.zero_grad()
-                if GPU_AVAILABLE and scaler:
-                    with autocast():
-                        outputs = model(X_batch, conf_data)
-                        loss = criterion(outputs, y_batch)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
+            optimizer.zero_grad()
+            if GPU_AVAILABLE and scaler:
+                with autocast():
                     outputs = model(X_batch, conf_data)
                     loss = criterion(outputs, y_batch)
-                    loss.backward()
-                    optimizer.step()
-                
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(X_batch, conf_data)
+                loss = criterion(outputs, y_batch)
+                loss.backward()
+                optimizer.step()
+            
+            total_loss += loss.item() * X_batch.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total_correct += (predicted == y_batch).sum().item()
+            total_samples += y_batch.size(0)
+        return total_loss / total_samples, total_correct / total_samples
+
+    def _validate_epoch(self, model, val_loader, criterion):
+        model.eval()
+        total_loss, total_correct, total_samples = 0, 0, 0
+        with torch.no_grad():
+            for batch in val_loader:
+                X_batch, y_batch = batch[0].to(DEVICE), batch[1].to(DEVICE)
+                conf_data = batch[2].to(DEVICE) if len(batch) > 2 else None
+                outputs = model(X_batch, conf_data)
+                loss = criterion(outputs, y_batch)
                 total_loss += loss.item() * X_batch.size(0)
                 _, predicted = torch.max(outputs.data, 1)
                 total_correct += (predicted == y_batch).sum().item()
                 total_samples += y_batch.size(0)
-            return total_loss / total_samples, total_correct / total_samples
-
-    def _validate_epoch(self, model, val_loader, criterion):
-            model.eval()
-            total_loss, total_correct, total_samples = 0, 0, 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    # --- ここから修正 ---
-                    # モデルに渡す前に、すべてのテンソルをGPUに移動させる
-                    X_batch = batch[0].to(DEVICE)
-                    y_batch = batch[1].to(DEVICE)
-                    conf_data = batch[2].to(DEVICE) if len(batch) == 3 else None
-                    # --- ここまで修正 ---
-
-                    outputs = model(X_batch, conf_data)
-                    loss = criterion(outputs, y_batch)
-                    total_loss += loss.item() * X_batch.size(0)
-                    _, predicted = torch.max(outputs.data, 1)
-                    total_correct += (predicted == y_batch).sum().item()
-                    total_samples += y_batch.size(0)
-            return total_loss / total_samples, total_correct / total_samples
+        return total_loss / total_samples, total_correct / total_samples
 
     def _train_and_evaluate_fold(self, model, X_train, y_train, X_val, y_val, class_weights, conf_train=None, conf_val=None):
-        """1つのfoldを学習・評価し、履歴を返す"""
-        train_ds = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train), *( (torch.FloatTensor(conf_train),) if conf_train is not None else () ))
-        val_ds = TensorDataset(torch.FloatTensor(X_val), torch.LongTensor(y_val), *( (torch.FloatTensor(conf_val),) if conf_val is not None else () ))
+        train_tensors = [torch.FloatTensor(X_train), torch.LongTensor(y_train)]
+        if conf_train is not None:
+            train_tensors.append(torch.FloatTensor(conf_train))
+        train_ds = TensorDataset(*train_tensors)
+
+        val_tensors = [torch.FloatTensor(X_val), torch.LongTensor(y_val)]
+        if conf_val is not None:
+            val_tensors.append(torch.FloatTensor(conf_val))
+        val_ds = TensorDataset(*val_tensors)
+
         train_loader = DataLoader(train_ds, batch_size=self.config['batch_size'], shuffle=True, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=self.config['batch_size'], shuffle=False, drop_last=True)
         
@@ -316,32 +320,36 @@ class TennisLSTMTrainer:
         return model
 
     def _evaluate_model_on_test(self, model, X_test, y_test, conf_test=None):
-        """テストデータでモデルを評価"""
         model.eval()
-        test_ds = TensorDataset(torch.FloatTensor(X_test), torch.LongTensor(y_test), *( (torch.FloatTensor(conf_test),) if conf_test is not None else () ))
+        test_tensors = [torch.FloatTensor(X_test), torch.LongTensor(y_test)]
+        if conf_test is not None:
+            test_tensors.append(torch.FloatTensor(conf_test))
+        test_ds = TensorDataset(*test_tensors)
         test_loader = DataLoader(test_ds, batch_size=self.config['batch_size'], shuffle=False)
         
         all_preds, all_true = [], []
         with torch.no_grad():
             for batch in test_loader:
-                conf_data = batch[2] if len(batch) == 3 else None
-                outputs = model(batch[0].to(DEVICE), conf_data.to(DEVICE) if conf_data is not None else None)
+                X_batch, y_batch = batch[0].to(DEVICE), batch[1].to(DEVICE)
+                conf_data = batch[2].to(DEVICE) if len(batch) > 2 else None
+                outputs = model(X_batch, conf_data)
                 _, predicted = torch.max(outputs.data, 1)
                 all_preds.extend(predicted.cpu().numpy())
-                all_true.extend(batch[1].cpu().numpy())
+                all_true.extend(y_batch.cpu().numpy())
 
         return np.array(all_true), np.array(all_preds)
 
-    def run_training_pipeline(self, csv_path: str = None):
+
+    def run_training_pipeline(self, csv_path: str = None) -> Optional[Dict]:
         """交差検証を含む完全な学習パイプライン"""
         # 1. データ準備
         df, success = self.load_dataset(csv_path)
-        if not success: return
+        if not success: return None
         
         X, y, confidence, feature_names = self.prepare_sequences(df)
         if len(X) == 0:
             print("エラー: シーケンスが作成されませんでした。処理を終了します。")
-            return
+            return None
             
         original_labels = sorted(np.unique(y))
         self.label_map = {label: i for i, label in enumerate(original_labels)}
@@ -350,19 +358,13 @@ class TennisLSTMTrainer:
         num_classes = len(original_labels)
         print(f"クラス数: {num_classes}, アクティブラベル: {self.active_phase_labels}")
 
-        # --- ★★★★★ 修正ポイント１：ここでクラスの重みを計算・定義します ★★★★★ ---
-        class_weights = compute_class_weight(
-            class_weight='balanced',
-            classes=np.unique(y_mapped),
-            y=y_mapped
-        )
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_mapped), y=y_mapped)
         class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(DEVICE)
         print(f"クラスの重みを計算しました: {class_weights}")
-        # --- ここまで ---
 
         n_splits = self.config.get('n_splits', 5)
+        cv_results = None
         if n_splits > 1:
-            # 2. 交差検証
             print(f"\n===== {n_splits}分割交差検証を開始します =====")
             skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
             
@@ -372,15 +374,24 @@ class TennisLSTMTrainer:
             for fold, (train_val_idx, test_idx) in enumerate(skf.split(X, y_mapped)):
                 print(f"--- FOLD {fold + 1}/{n_splits} ---")
                 
+                # ... (データ分割のロジックは変更なし) ...
                 X_train_val, X_test = X[train_val_idx], X[test_idx]
                 y_train_val, y_test = y_mapped[train_val_idx], y_mapped[test_idx]
-                conf_train_val, conf_test = (confidence[train_val_idx], confidence[test_idx]) if self.config['enable_confidence_weighting'] else (None, None)
                 
-                X_train, X_val, y_train, y_val, conf_train, conf_val = train_test_split(
-                    X_train_val, y_train_val, *( (conf_train_val,) if conf_train_val is not None else () ), 
-                    test_size=0.2, stratify=y_train_val, random_state=42
-                )
+                conf_train_val, conf_test = (None, None)
+                if self.config.get('enable_confidence_weighting', False) and confidence is not None:
+                     conf_train_val, conf_test = confidence[train_val_idx], confidence[test_idx]
+
+                # train_test_splitに渡す配列リストを動的に構築
+                split_arrays = [X_train_val, y_train_val]
+                if conf_train_val is not None:
+                    split_arrays.append(conf_train_val)
+
+                split_results = train_test_split(*split_arrays, test_size=0.2, stratify=y_train_val, random_state=42)
                 
+                X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
+                conf_train, conf_val = (split_results[4], split_results[5]) if conf_train_val is not None else (None, None)
+
                 scaler = StandardScaler()
                 X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
                 scaler.fit(X_train_reshaped)
@@ -389,8 +400,6 @@ class TennisLSTMTrainer:
                 X_test = scaler.transform(X_test.reshape(-1, X_test.shape[-1])).reshape(X_test.shape)
 
                 model = self.build_model(X.shape[2], num_classes)
-                
-                # --- ★★★★★ 修正ポイント２：計算した`class_weights_tensor`を引数として渡します ★★★★★ ---
                 model = self._train_and_evaluate_fold(model, X_train, y_train, X_val, y_val, class_weights_tensor, conf_train, conf_val)
                 
                 true_labels, pred_labels = self._evaluate_model_on_test(model, X_test, y_test, conf_test)
@@ -402,15 +411,24 @@ class TennisLSTMTrainer:
                 fold_scores.append({'accuracy': acc, 'f1_score': f1})
                 print(f"FOLD {fold + 1} 結果: Accuracy={acc:.4f}, F1-score={f1:.4f}")
 
-            self.evaluate_cv_results(all_fold_true, all_fold_preds, fold_scores)
+            # --- ★★★ 変更点 ★★★ ---
+            # evaluate_cv_resultsから結果を受け取る
+            cv_results = self.evaluate_cv_results(all_fold_true, all_fold_preds, fold_scores)
 
-        # 4. 最終モデルの学習と保存
-        if self.config['execution_mode'] == 'full':
+        if self.config.get('execution_mode', 'full') == 'full':
             print("\n===== 全データを使用して最終モデルの学習を開始します =====")
-            X_train, X_val, y_train, y_val, conf_train, conf_val = train_test_split(
-                X, y_mapped, *( (confidence,) if self.config['enable_confidence_weighting'] else () ),
-                test_size=0.2, stratify=y_mapped, random_state=42
-            )
+             # ... (最終モデル学習のロジックは変更なし) ...
+            split_arrays = [X, y_mapped]
+            if self.config.get('enable_confidence_weighting', False) and confidence is not None:
+                split_arrays.append(confidence)
+
+            split_results = train_test_split(*split_arrays, test_size=0.2, stratify=y_mapped, random_state=42)
+            
+            X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
+            conf_train, conf_val = (None, None)
+            if self.config.get('enable_confidence_weighting', False) and confidence is not None:
+                 conf_train, conf_val = (split_results[4], split_results[5])
+
             self.scaler = StandardScaler()
             X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
             self.scaler.fit(X_train_reshaped)
@@ -418,18 +436,19 @@ class TennisLSTMTrainer:
             X_val = self.scaler.transform(X_val.reshape(-1, X_val.shape[-1])).reshape(X_val.shape)
             
             self.model = self.build_model(X.shape[2], num_classes)
-            
-            # --- ★★★★★ 修正ポイント３：最終学習でも`class_weights_tensor`を引数として渡します ★★★★★ ---
             self.model = self._train_and_evaluate_fold(self.model, X_train, y_train, X_val, y_val, class_weights_tensor, conf_train, conf_val)
             
             video_names = df['video_name'].unique().tolist() if 'video_name' in df.columns else []
             self.save_model(feature_names, video_names)
             self.plot_training_history()
         
-        print("\n全ての処理が正常に完了しました。")
+        print(f"\n[{self.experiment_name}] の処理が正常に完了しました。")
+        return cv_results
 
-    def evaluate_cv_results(self, y_true, y_pred, fold_scores):
-        """交差検証の結果を評価・表示"""
+    # --- ★★★ 変更点 ★★★ ---
+    # CVの結果を辞書で返すように変更
+    def evaluate_cv_results(self, y_true, y_pred, fold_scores) -> Dict:
+        """交差検証の結果を評価・表示し、サマリーを返す"""
         print("\n===== 交差検証 最終結果 =====")
         
         avg_acc = np.mean([s['accuracy'] for s in fold_scores])
@@ -441,15 +460,27 @@ class TennisLSTMTrainer:
         print(f"平均F1スコア: {avg_f1:.4f} (+/- {std_f1:.4f})")
         
         print("\n総合分類レポート (全Fold):")
+        report_path = self.experiment_dir / f'classification_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
         report = classification_report(y_true, y_pred, target_names=self.active_phase_labels, zero_division=0)
         print(report)
-        
-        self.plot_confusion_matrix(y_true, y_pred, title_suffix="(Cross-Validation Overall)")
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+        print(f"分類レポートを保存しました: {report_path}")
 
+        
+        self.plot_confusion_matrix(y_true, y_pred, title_suffix=f"({self.experiment_name} - CV Overall)")
+
+        return {
+            "avg_accuracy": avg_acc, "std_accuracy": std_acc,
+            "avg_f1_score": avg_f1, "std_f1_score": std_f1
+        }
+
+    # --- ★★★ 変更点 ★★★ ---
+    # ファイル名に実験名が含まれるように変更
     def save_model(self, feature_names: List[str], video_names: List[str] = None):
         """学習済みモデル、スケーラー、メタデータを保存"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = f"tennis_pytorch_{self.config['model_type']}_{timestamp}"
+        base_name = f"tennis_pytorch_{timestamp}" # タイムスタンプをメインに
         
         model_path = self.models_dir / f"{base_name}_model.pth"
         scaler_path = self.models_dir / f"{base_name}_scaler.pkl"
@@ -461,6 +492,7 @@ class TennisLSTMTrainer:
         json_compatible_label_map = {int(k): int(v) for k, v in self.label_map.items()}
         
         metadata = {
+            'experiment_name': self.experiment_name,
             'creation_time': timestamp,
             'model_config': self.config,
             'video_names': video_names or [],
@@ -472,13 +504,13 @@ class TennisLSTMTrainer:
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
         
-        print(f"\nモデルを保存しました: {model_path.name}")
-        print(f"スケーラーを保存しました: {scaler_path.name}")
-        print(f"メタデータを保存しました: {metadata_path.name}")
+        print(f"\nモデルを保存しました: {model_path}")
+        print(f"スケーラーを保存しました: {scaler_path}")
+        print(f"メタデータを保存しました: {metadata_path}")
 
     def plot_confusion_matrix(self, y_true: np.ndarray, y_pred: np.ndarray, title_suffix: str = ""):
         """混同行列の可視化"""
-        cm = confusion_matrix(y_true, y_pred)
+        cm = confusion_matrix(y_true, y_pred, labels=range(len(self.active_phase_labels)))
         plt.figure(figsize=(12, 10))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                     xticklabels=self.active_phase_labels, yticklabels=self.active_phase_labels)
@@ -488,9 +520,9 @@ class TennisLSTMTrainer:
         plt.xticks(rotation=45, ha='right')
         plt.yticks(rotation=0)
         plt.tight_layout()
-        save_path = self.models_dir / f'confusion_matrix_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+        save_path = self.experiment_dir / f'confusion_matrix_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
         plt.savefig(save_path, dpi=300)
-        plt.show()
+        plt.close() # メモリ解放のために閉じる
         print(f"混同行列を保存しました: {save_path}")
 
     def plot_training_history(self):
@@ -500,42 +532,93 @@ class TennisLSTMTrainer:
         
         ax1.plot(self.history['train_loss'], label='Training Loss')
         ax1.plot(self.history['val_loss'], label='Validation Loss')
-        ax1.set_title('Model Loss')
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Loss')
-        ax1.legend()
-        ax1.grid(True)
+        ax1.set_title(f'Model Loss ({self.experiment_name})')
+        ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss'); ax1.legend(); ax1.grid(True)
         
         ax2.plot(self.history['train_acc'], label='Training Accuracy')
         ax2.plot(self.history['val_acc'], label='Validation Accuracy')
-        ax2.set_title('Model Accuracy')
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Accuracy')
-        ax2.legend()
-        ax2.grid(True)
+        ax2.set_title(f'Model Accuracy ({self.experiment_name})')
+        ax2.set_xlabel('Epoch'); ax2.set_ylabel('Accuracy'); ax2.legend(); ax2.grid(True)
         
         plt.tight_layout()
-        save_path = self.models_dir / f'training_history_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+        save_path = self.experiment_dir / f'training_history_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
         plt.savefig(save_path, dpi=300)
-        plt.show()
+        plt.close() # メモリ解放のために閉じる
         print(f"学習履歴グラフを保存しました: {save_path}")
 
 
 def main():
-    """メイン関数"""
-    parser = argparse.ArgumentParser(description="テニス局面分類PyTorch LSTM学習ツール（交差検証対応）")
-    parser.add_argument('--config', type=str, default='config.yaml', help='設定ファイルのパス')
+    """メイン関数：複数実験のパイプラインを実行"""
+    parser = argparse.ArgumentParser(description="テニス局面分類PyTorch LSTM自動検証ツール")
+    parser.add_argument('--config', type=str, default='config_experiments.yaml', help='実験設定ファイルのパス')
     parser.add_argument('--csv_path', type=str, default=None, help='(オプション) 使用するデータセットCSVファイルのパス')
-    
     args = parser.parse_args()
 
     try:
-        config = load_config(args.config)
-        trainer = TennisLSTMTrainer(config)
-        trainer.run_training_pipeline(csv_path=args.csv_path)
+        # --- ★★★ ここからが新しいメインロジックです ★★★ ---
+        full_config = load_config(args.config)
+        
+        # 共通設定とCPUオーバーライド設定を抽出
+        base_config = {k: v for k, v in full_config.items() if k not in ['model_experiments', 'cpu_settings']}
+        cpu_override = full_config.get('cpu_settings', {})
+        
+        # 実験設定のリストを取得
+        experiments = full_config.get('model_experiments')
+        if not experiments:
+            print("エラー: 設定ファイルに 'model_experiments' のリストが見つかりません。")
+            return
+
+        all_results = []
+        overall_start_time = time.time()
+
+        print(f"\n====== 合計 {len(experiments)} 件の実験を開始します ======")
+
+        for i, exp_config in enumerate(experiments):
+            exp_start_time = time.time()
+            
+            print(f"\n--- 実験 {i+1}/{len(experiments)}: {exp_config.get('name', 'Unnamed')} 開始 ---")
+            
+            # 共通設定をコピーし、実験ごとの設定で上書き
+            current_config = copy.deepcopy(base_config)
+            current_config.update(exp_config)
+
+            # GPUが使えない場合、CPU設定でさらに上書き
+            if not GPU_AVAILABLE and cpu_override:
+                print("警告: GPUが利用できません。CPU用の設定で上書きします。")
+                current_config.update(cpu_override)
+
+            trainer = TennisLSTMTrainer(current_config)
+            cv_results = trainer.run_training_pipeline(csv_path=args.csv_path)
+            
+            exp_end_time = time.time()
+            duration = exp_end_time - exp_start_time
+            
+            if cv_results:
+                result_summary = {
+                    "Experiment Name": exp_config.get('name', 'Unnamed'),
+                    "Avg Accuracy": cv_results.get('avg_accuracy', 0),
+                    "Std Accuracy": cv_results.get('std_accuracy', 0),
+                    "Avg F1 Score": cv_results.get('avg_f1_score', 0),
+                    "Std F1 Score": cv_results.get('std_f1_score', 0),
+                    "Duration (sec)": duration,
+                }
+                all_results.append(result_summary)
+
+        overall_end_time = time.time()
+        print(f"\n====== 全ての実験が完了しました (合計所要時間: {(overall_end_time - overall_start_time)/60:.2f} 分) ======")
+
+        if all_results:
+            results_df = pd.DataFrame(all_results)
+            print("\n--- 実験結果サマリー ---")
+            print(results_df.to_string())
+
+            # サマリーをCSVファイルとして保存
+            summary_path = Path(base_config.get('training_data_dir', '.')) / "experiments" / f'experiment_summary_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            results_df.to_csv(summary_path, index=False)
+            print(f"\n結果のサマリーを保存しました: {summary_path}")
+
     except Exception as e:
         print(f"パイプラインの実行中に予期せぬエラーが発生しました: {e}")
-        # 詳細なエラー情報を表示したい場合
         import traceback
         traceback.print_exc()
 

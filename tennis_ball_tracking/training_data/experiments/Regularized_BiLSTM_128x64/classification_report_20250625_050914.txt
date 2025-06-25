@@ -1,0 +1,13 @@
+                   precision    recall  f1-score   support
+
+   point_interval       0.98      0.93      0.95      4939
+            rally       0.95      0.97      0.96      2194
+serve_front_deuce       0.90      0.94      0.92       667
+   serve_front_ad       0.91      0.95      0.93       519
+ serve_back_deuce       0.83      0.99      0.90       360
+    serve_back_ad       0.82      0.96      0.88       361
+       changeover       0.97      0.99      0.98       812
+
+         accuracy                           0.95      9852
+        macro avg       0.91      0.96      0.93      9852
+     weighted avg       0.95      0.95      0.95      9852
