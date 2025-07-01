@@ -29,34 +29,72 @@ cpu_settings:
 # --- ▼ ここから下に、試したいモデルの組み合わせをリストで記述します ▼ ---
 # -----------------------------------------------------------------------------
 model_experiments:
-  - name: "SeqHunt_Seq10_LSTM32"
-    model_type: "simple"
-    sequence_length: 10
-    lstm_units: [32]
-    dropout_rate: 0.2
-    enable_confidence_weighting: false
-    batch_size: 128
+  # # --- 実験1: ベースライン (Stacked LSTM) ---
+  # - name: "1_Baseline_Stacked"
+  #   model_type: "stacked"
+  #   sequence_length: 30
+  #   lstm_units: [128, 64]      # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.4
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: false
 
-  - name: "SeqHunt_5_LSTM32"
-    model_type: "simple"
-    sequence_length: 5
-    lstm_units: [32]
-    dropout_rate: 0.2
-    enable_confidence_weighting: false
-    batch_size: 128
+  # # --- 実験2: 双方向モデル (Bidirectional) ---
+  # - name: "2_Bidirectional"
+  #   model_type: "bidirectional"
+  #   sequence_length: 30
+  #   lstm_units: [128, 64]      # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.5
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: false
 
-  - name: "SeqHunt_Seq2_LSTM32"
-    model_type: "simple"
-    sequence_length: 2
-    lstm_units: [32]
-    dropout_rate: 0.2
-    enable_confidence_weighting: false
-    batch_size: 128
+  # # --- 実験3: シンプルモデル (Simple) ---
+  # - name: "3_Simple"
+  #   model_type: "simple"
+  #   sequence_length: 30
+  #   lstm_units: [128]          # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.4
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: false
 
-  - name: "SeqHunt_Seq10_LSTM16"
-    model_type: "simple"
-    sequence_length: 10
-    lstm_units: [16]
-    dropout_rate: 0.2
+  # # --- 実験4: 信頼度重み付けの効果 ---
+  # - name: "4_With_Confidence"
+  #   model_type: "stacked"
+  #   sequence_length: 30
+  #   lstm_units: [128, 64]      # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.4
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: true
+
+  # # --- 実験5: より深いStackedモデル ---
+  # - name: "5_Deeper_Stacked"
+  #   model_type: "stacked"
+  #   sequence_length: 30
+  #   lstm_units: [256, 128, 64] # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.5
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: false
+
+  # --- 実験6: 長いシーケンス + 双方向 ---
+  - name: "6_LongSeq_Bidirectional"
+    model_type: "bidirectional"
+    sequence_length: 45
+    lstm_units: [128, 64]      # hidden_sizes: -> lstm_units: に修正
+    dropout_rate: 0.5
+    learning_rate: 0.001
+    batch_size: 64
     enable_confidence_weighting: false
-    batch_size: 128
+
+  # # --- 実験7: 短いシーケンス ---
+  # - name: "7_ShortSeq_Stacked"
+  #   model_type: "stacked"
+  #   sequence_length: 15
+  #   lstm_units: [128, 64]      # hidden_sizes: -> lstm_units: に修正
+  #   dropout_rate: 0.4
+  #   learning_rate: 0.001
+  #   batch_size: 128
+  #   enable_confidence_weighting: false

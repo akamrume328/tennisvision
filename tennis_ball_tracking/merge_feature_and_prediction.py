@@ -436,7 +436,7 @@ class MergeFeaturesAndPredictions:
             prediction_csv_path = self._select_file_dialog(
                 title="LSTM予測CSVファイル選択 (predict_lstm_model.py 出力)",
                 directory=self.base_dir / "predictions", # predict_lstm_model.py の出力先想定
-                pattern="tennis_inference_features_*_predictions_*.csv" # パターンを変更
+                pattern="*.csv" # パターンを変更
             )
         prediction_df = self.load_csv(prediction_csv_path, "LSTM予測CSV")
         if prediction_df is None:

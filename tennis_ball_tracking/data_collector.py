@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 from court_calibrator import CourtCalibrator
 import tkinter as tk
+import time
 
 class PhaseAnnotator:
     """
@@ -19,6 +20,7 @@ class PhaseAnnotator:
     def __init__(self):
         # --- 状態管理 ---
         self.video_cap = None
+        self.video_path = None
         self.current_frame_number = 0
         self.total_frames = 0
         self.fps = 30.0
@@ -51,6 +53,7 @@ class PhaseAnnotator:
         動画のアノテーション処理を開始します。
         既存のアノテーションパスが指定された場合は編集モードで開始します。
         """
+        self.video_path = video_path
         self.editing_file_path = existing_annotation_path
         if not self._setup(video_path):
             return False
@@ -147,28 +150,68 @@ class PhaseAnnotator:
 
     # --- (メインループとイベント処理は変更なし) ---
     def _annotation_loop(self):
-        while True:
-            frame = self._get_current_frame()
-            if frame is None: break
-            self._draw_ui(frame)
-            wait_time = max(1, int(1000 / (self.fps * self.playback_speed))) if self.is_playing else 0
-            key = cv2.waitKey(wait_time) & 0xFF
-            if key != 255 and self._handle_key_input(key):
-                break
+            # --- ▼▼▼ 修正箇所（全体を置き換え）▼▼▼ ---
+            
+            # 高精度タイマーで、ループ開始前の時刻を記録
+            loop_start_time = time.perf_counter()
+
+            while True:
+                # --- フレーム取得とUI描画 ---
+                frame = self._get_current_frame()
+                if frame is None:
+                    break
+                self._draw_ui(frame)
+
+                # --- 待機時間の動的計算 ---
+                wait_time_ms = 0  # 停止中 (is_playing=False) のデフォルト待機時間 (キー入力まで無制限に待つ)
+                
+                if self.is_playing:
+                    # FPSが正常に取得できているか確認
+                    effective_fps = self.fps if self.fps and self.fps > 1 else 30.0
+                    # 1フレームあたりにかけたい目標時間（秒）
+                    target_duration_sec = 1.0 / (effective_fps * self.playback_speed)
+
+                    # 前回のループ開始から現在までの経過時間（実際の処理時間）を計算
+                    processing_time_sec = time.perf_counter() - loop_start_time
+
+                    # 待機すべき時間 = 目標時間 - 実際の処理時間
+                    wait_duration_sec = target_duration_sec - processing_time_sec
+                    
+                    # 計算結果をミリ秒に変換。負の値（処理遅延）の場合は最低でも1msとする
+                    wait_time_ms = max(1, int(wait_duration_sec * 1000))
+
+                # --- キー入力の受付 ---
+                key = cv2.waitKey(wait_time_ms) & 0xFF
+
+                # 次のループのために、現在の時刻を記録する
+                loop_start_time = time.perf_counter()
+
+                # --- キー入力の処理 ---
+                if key != 255 and self._handle_key_input(key):
+                    break
+            # --- ▲▲▲ 修正完了 ▲▲▲ ---
+
     def _get_current_frame(self):
-        if self.is_playing:
-            ret, frame = self.video_cap.read()
-            if not ret:
-                print("動画の終端に達しました")
-                self.is_playing = False
-                self._seek_frame(self.total_frames - 1)
-                ret, frame = self.video_cap.read()
+            if self.is_playing:
+                # --- 60fps対策: 1フレーム読み飛ばして処理負荷を半分にする ---
+                self.video_cap.grab()  # 1フレーム目をデコードだけして読み飛ばす（描画しないので高速）
+                ret, frame = self.video_cap.read() # 2フレーム目を読み込んで、これを表示対象とする
+                
+                if not ret:
+                    print("動画の終端に達しました")
+                    self.is_playing = False
+                    self._seek_frame(self.total_frames - 1)
+                    # 終端でもう一度読み込みを試みる
+                    self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)
+                    ret, frame = self.video_cap.read()
+                else:
+                    self.current_frame_number = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
             else:
-                 self.current_frame_number = int(self.video_cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-        else:
-            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)
-            ret, frame = self.video_cap.read()
-        return frame if ret else None
+                # 停止中はフレームスキップしない
+                self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)
+                ret, frame = self.video_cap.read()
+                
+            return frame if ret else None
     def _handle_key_input(self, key):
         if ord('1') <= key <= ord('7'): self._record_phase_change(self.phases[key - ord('1')])
         elif key == ord(' '): self.is_playing = not self.is_playing
@@ -202,30 +245,77 @@ class PhaseAnnotator:
             print(f"再生速度: {self.playback_speed}x")
         except ValueError: self.playback_speed = 1.0
     def _run_court_calibration(self):
-        print("\nコート座標設定を開始します...")
-        self.is_playing = False
-        ret, frame = self.video_cap.read()
-        if not ret:
-            print("❌ フレーム読み込みエラー"); return
-        calibrator = CourtCalibrator()
-        if calibrator.calibrate(frame, self.video_cap):
-            self.court_coordinates = calibrator.get_coordinates()
-            self.show_court_overlay = True
-            print("✅ コート座標設定完了:")
-            for name, point in self.court_coordinates.items(): print(f"   - {name}: {point}")
-        else:
-            print("❌ コート座標設定がキャンセルされました")
-        cv2.destroyAllWindows()
-        cv2.namedWindow('Phase Annotation', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Phase Annotation', self.window_width, self.window_height)
+            print("\nコート座標設定を開始します...")
+            
+            # 1. 現在の再生状態とフレーム番号を保存
+            original_is_playing = self.is_playing
+            original_frame_number = self.current_frame_number
+            self.is_playing = False  # 安全のため再生を停止
+            
+            # 2. 現在表示しているフレームを正確に取得してキャリブレーションに使う
+            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, original_frame_number)
+            ret, frame_for_calib = self.video_cap.read()
+            if not ret:
+                print("❌ 現在のフレームの読み込みに失敗しました。")
+                self.is_playing = original_is_playing # 元の状態に戻す
+                return
+
+            # 3. CourtCalibratorを準備し、既存の座標があれば渡す
+            calibrator = CourtCalibrator()
+            if self.court_coordinates:
+                print("既存の座標を読み込んで編集モードで開始します。")
+                calibrator.set_coordinates(self.court_coordinates)
+
+            # 4. キャリブレーションを実行
+            # calibrateメソッドがTrueを返せば、座標が設定または更新された
+            if calibrator.calibrate(frame_for_calib, self.video_cap):
+                self.court_coordinates = calibrator.get_coordinates()
+                self.show_court_overlay = True
+                print("✅ コート座標が更新されました。")
+                if self.video_path:
+                    try:
+                        video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+                        output_dir = "training_data"
+                        os.makedirs(output_dir, exist_ok=True)
+                        coord_file = os.path.join(output_dir, f"court_coords_{video_name}.json")
+
+                        with open(coord_file, 'w', encoding='utf-8') as f:
+                            json.dump(self.court_coordinates, f, indent=2, ensure_ascii=False)
+                            print(f"✅ コート座標を保存しました: {coord_file}")
+                    except Exception as e:
+                        print(f"❌ コート座標の保存に失敗しました: {e}")
+
+            else:
+                print("🟡 コート座標設定がキャンセルまたは中断されました。")
+
+            # 5. アノテーション用のウィンドウを再生成
+            # CourtCalibratorのウィンドウを閉じるため、こちらも再準備が必要
+            cv2.destroyAllWindows() 
+            cv2.namedWindow('Phase Annotation', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Phase Annotation', self.window_width, self.window_height)
+
+            # 6. 元のフレームと再生状態に戻す
+            # これにより、作業を中断したところからシームレスに再開できる
+            self._seek_frame(original_frame_number, stop_playback=(not original_is_playing))
 
     # --- (UI描画は変更なし) ---
     def _draw_ui(self, frame):
-        display_frame, scale_factors = self._resize_frame_for_display(frame.copy())
-        if self.show_court_overlay and self.court_coordinates:
-            display_frame = self.draw_court_overlay(display_frame, scale_factors)
-        self._draw_annotation_ui(display_frame)
-        cv2.imshow('Phase Annotation', display_frame)
+        # --- ▼▼▼ 【テスト用】UI描画を極限まで軽量化 ▼▼▼ ---
+        if self.is_playing:
+            # 【テスト】再生中はリサイズして表示するだけ。UIは一切描画しない。
+            # これで速度が改善するかどうかを確認します。
+            display_frame, _ = self._resize_frame_for_display(frame)
+            cv2.imshow('Phase Annotation', display_frame)
+        else:
+            # 停止中は元フレームを保護するためにコピーしてからUIを描画します
+            display_frame, scale_factors = self._resize_frame_for_display(frame.copy())
+            if self.show_court_overlay and self.court_coordinates:
+                display_frame = self.draw_court_overlay(display_frame, scale_factors)
+            
+            # _draw_annotation_uiは前回修正した軽量版を呼び出します
+            self._draw_annotation_ui(display_frame)
+            cv2.imshow('Phase Annotation', display_frame)
+        # --- ▲▲▲ テスト用コード終了 ▲▲▲ ---
     def _resize_frame_for_display(self, frame):
         h, w = frame.shape[:2]
         target_w, target_h = int(self.window_width * 0.7), int(self.window_height * 0.9)
@@ -236,41 +326,61 @@ class PhaseAnnotator:
         scale_x, scale_y = (new_w / w if w > 0 else 0), (new_h / h if h > 0 else 0)
         return resized_frame, (scale_x, scale_y)
     def _draw_annotation_ui(self, frame):
-        h, w = frame.shape[:2]
-        font_scale, thickness = max(0.3, self.ui_font_scale * self.display_scale), max(1, int(1.5 * self.display_scale))
-        y, dy, left_x, right_x = int(20 * self.display_scale), int(18 * self.display_scale), 10, w // 2 + 10
-        info_y, status_y, phase_y = y, y + dy, y + dy * 2
-        ph_dy = int(dy * 0.7)
-        phases_list_y_start = phase_y + int(dy * 1.3)
-        phases_list_y_end = phases_list_y_start + (len(self.phases) // 2) * ph_dy
-        help_texts = ["1-7:Phase SPACE:Play/Pause A/D:Frame W/S:10f Z/X:100f", "+/-:Speed 0:1x C:Court O:Overlay U:Undo Q:Save&Quit"]
-        help_y_start = phases_list_y_end + int(dy * 0.5)
-        help_y_end = help_y_start + (len(help_texts) - 1) * int(dy * 0.6)
-        ui_background_height = help_y_end + int(20 * self.display_scale)
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (5, 5), (w - 5, min(h - 5, ui_background_height)), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-        progress = self.current_frame_number / self.total_frames if self.total_frames > 0 else 0
-        cv2.putText(frame, f"Frame: {self.current_frame_number}/{self.total_frames}", (left_x, info_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), thickness)
-        cv2.putText(frame, f"Progress: {progress:.1%}", (left_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), thickness)
-        status, s_color = ("PLAY", (0,255,0)) if self.is_playing else ("PAUSE", (0,0,255))
-        cv2.putText(frame, f"Status: {status}", (right_x, info_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, s_color, thickness)
-        cv2.putText(frame, f"Speed: {self.playback_speed}x", (right_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,255,255), thickness)
-        cv2.putText(frame, f"Phase: {self.current_phase or 'None'}", (left_x, phase_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,255,0), thickness)
-        court_info = f"ON ({len(self.court_coordinates)} pts)" if self.court_coordinates else "OFF"
-        court_status = f"Court: {court_info} | Ovl: {'ON' if self.show_court_overlay else 'OFF'}"
-        cv2.putText(frame, court_status, (right_x, phase_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,0), thickness)
-        ph_font_scale = font_scale * 0.85
-        phases_per_column = (len(self.phases) + 1) // 2
-        for i, p in enumerate(self.phases):
-            col, row = i // phases_per_column, i % phases_per_column
-            x_pos, y_pos = (left_x if col == 0 else right_x), phases_list_y_start + row * ph_dy
-            color = (0, 255, 0) if p == self.current_phase else (255, 255, 255)
-            short_phase = p.replace("serve_", "").replace("_", " ")[:12]
-            cv2.putText(frame, f"{i+1}: {short_phase}", (x_pos, y_pos), cv2.FONT_HERSHEY_SIMPLEX, ph_font_scale, color, max(1, thickness-1))
-        for i, text in enumerate(help_texts):
-            y_pos = help_y_start + i * int(dy * 0.6)
-            if y_pos < h - 10: cv2.putText(frame, text, (left_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.6, (255,255,0), max(1, thickness-1))
+            # --- ▼▼▼ 修正箇所（全体を置き換え）▼▼▼ ---
+            h, w = frame.shape[:2]
+            font_scale, thickness = max(0.3, self.ui_font_scale * self.display_scale), max(1, int(1.5 * self.display_scale))
+            y, dy, left_x, right_x = int(20 * self.display_scale), int(18 * self.display_scale), 10, w // 2 + 10
+
+            # --- UI要素の座標などを事前に計算 ---
+            info_y, status_y, phase_y = y, y + dy, y + dy * 2
+            ph_dy = int(dy * 0.7)
+            phases_list_y_start = phase_y + int(dy * 1.3)
+            phases_per_column = (len(self.phases) + 1) // 2
+            phases_list_y_end = phases_list_y_start + (phases_per_column -1) * ph_dy
+            help_texts = ["1-7:Phase SPACE:Play/Pause A/D:Frame W/S:10f Z/X:100f", "+/-:Speed 0:1x C:Court O:Overlay U:Undo Q:Save&Quit"]
+            help_y_start = phases_list_y_end + int(dy * 1.5)
+            help_y_end = help_y_start + (len(help_texts) - 1) * int(dy * 0.6)
+
+            # --- ステップ1: UI背景の描画を軽量化 ---
+            # 再生中は最小限の背景、停止中は全てのUIが入る高さの背景を描画
+            if self.is_playing:
+                ui_background_height = phase_y + int(dy * 0.5)
+            else:
+                ui_background_height = help_y_end + int(20 * self.display_scale)
+
+            # ★★★ 最も重要な軽量化: addWeightedを廃止し、単純な矩形描画に変更 ★★★
+            cv2.rectangle(frame, (5, 5), (w - 5, min(h - 5, ui_background_height)), (0, 0, 0), -1)
+
+            # --- 常に表示する情報（再生中/停止中共通） ---
+            progress = self.current_frame_number / self.total_frames if self.total_frames > 0 else 0
+            # FrameとProgressを1行にまとめて描画命令を削減
+            cv2.putText(frame, f"Frame: {self.current_frame_number}/{self.total_frames} ({progress:.1%})", (left_x, info_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), thickness)
+
+            status, s_color = ("PLAY", (0,255,0)) if self.is_playing else ("PAUSE", (0,0,255))
+            cv2.putText(frame, f"Status: {status}", (left_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, s_color, thickness)
+            cv2.putText(frame, f"Speed: {self.playback_speed}x", (right_x, status_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,255,255), thickness)
+            cv2.putText(frame, f"Phase: {self.current_phase or 'None'}", (left_x, phase_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,255,0), thickness)
+
+            # --- ステップ2: 停止中 (is_playing=False) のみ詳細情報を描画 ---
+            if not self.is_playing:
+                court_info = f"ON ({len(self.court_coordinates)} pts)" if self.court_coordinates else "OFF"
+                court_status = f"Court: {court_info} | Ovl: {'ON' if self.show_court_overlay else 'OFF'}"
+                cv2.putText(frame, court_status, (right_x, phase_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,0), thickness)
+
+                # 局面リストの描画
+                ph_font_scale = font_scale * 0.85
+                for i, p in enumerate(self.phases):
+                    col, row = i // phases_per_column, i % phases_per_column
+                    x_pos, y_pos = (left_x if col == 0 else right_x), phases_list_y_start + row * ph_dy
+                    color = (0, 255, 0) if p == self.current_phase else (255, 255, 255)
+                    short_phase = p.replace("serve_", "").replace("_", " ")[:12]
+                    cv2.putText(frame, f"{i+1}: {short_phase}", (x_pos, y_pos), cv2.FONT_HERSHEY_SIMPLEX, ph_font_scale, color, max(1, thickness-1))
+
+                # ヘルプテキストの描画
+                for i, text in enumerate(help_texts):
+                    y_pos = help_y_start + i * int(dy * 0.6)
+                    if y_pos < h - 10: cv2.putText(frame, text, (left_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.6, (255,255,0), max(1, thickness-1))
+            # --- ▲▲▲ 修正完了 ▲▲▲ ---
     def draw_court_overlay(self, frame, scale_factors):
         overlay_frame, thickness, (scale_x, scale_y) = frame.copy(), max(1, int(1.5 * self.display_scale)), scale_factors
         scaled_coords = {name: (int(p[0] * scale_x), int(p[1] * scale_y)) for name, p in self.court_coordinates.items() if p and len(p) == 2}

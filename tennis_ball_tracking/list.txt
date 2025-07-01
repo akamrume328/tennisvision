@@ -1,0 +1,7 @@
+                'player_back_court_x', 'player_back_court_y', 'player_front_court_x', 'player_front_court_y',
+                'player_front_distance_to_net', 'player_back_distance_to_net', 'players_court_distance',
+                'player_front_x_normalized', 'player_back_x_normalized', 'ball_to_front_court_distance',
+                'ball_to_back_court_distance', 'player_front_width', 'player_front_height', 'player_back_width',
+                'player_back_height', 'ball_movement_score', 'ball_speed', 'ball_court_x', 'ball_court_y',
+                'disappeared_count', 'candidate_balls_count', 'trajectory_length', 'player_front_activity_10',
+                'player_back_activity_10', 'player_back_confidence',

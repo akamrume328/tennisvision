@@ -13,7 +13,7 @@ import yaml
 warnings.filterwarnings('ignore')
 
 # 機械学習ライブラリ
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import train_test_split, GroupKFold, GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 from sklearn.utils.class_weight import compute_class_weight
@@ -154,7 +154,7 @@ class TennisLSTMTrainer:
         print(f"ラベル検証・修正完了。データ保持率: {(final_count/original_count)*100:.1f}%")
         return df
 
-    def prepare_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    def prepare_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
         """時系列シーケンスデータの作成"""
         print("時系列シーケンス作成開始...")
         df_cleaned = self._validate_and_clean_labels(df)
@@ -169,17 +169,16 @@ class TennisLSTMTrainer:
         confidence_scores = None
         if self.config.get('enable_confidence_weighting', False):
             if 'interpolation_ratio' in df_cleaned.columns:
-                # 補間率(ratio)が高いほど信頼度は低いので、(1 - ratio)をスコアとする
                 confidence_scores = (1.0 - df_cleaned['interpolation_ratio'].fillna(0)).values
                 print("✅ 'interpolation_ratio' に基づいて信頼度スコアを生成しました。")
             else:
-                # 列がない場合は、重み付けなし（信頼度1.0）で実行
                 confidence_scores = np.ones(len(df_cleaned))
                 print("⚠️ 'interpolation_ratio'列が見つからないため、信頼度重み付けは実質的に無効です。")
         else:
-             print("ℹ️ 信頼度重み付けは設定で無効になっています。")
+                print("ℹ️ 信頼度重み付けは設定で無効になっています。")
 
-        sequences, sequence_labels, confidence_sequences = [], [], []
+        # ★ sequence_groups を追加
+        sequences, sequence_labels, confidence_sequences, sequence_groups = [], [], [], []
         step_size = max(1, int(self.config['sequence_length'] * (1 - self.config['overlap_ratio'])))
 
         for video in pd.unique(video_names):
@@ -190,16 +189,16 @@ class TennisLSTMTrainer:
             for i in range(0, len(video_X) - self.config['sequence_length'] + 1, step_size):
                 sequences.append(video_X[i:i + self.config['sequence_length']])
                 sequence_labels.append(video_y[i + self.config['sequence_length'] - 1])
+                sequence_groups.append(video) # ★ シーケンスに対応するビデオ名を追加
                 if video_conf is not None:
                     confidence_sequences.append(video_conf[i:i + self.config['sequence_length']])
         
         print(f"作成されたシーケンス数: {len(sequences)}")
         
-        # confidence_sequencesが空でなければnumpy配列に変換
         conf_array = np.array(confidence_sequences) if confidence_sequences else None
         
-        return np.array(sequences), np.array(sequence_labels), conf_array, feature_columns
-
+        # ★ 返り値に np.array(sequence_groups) を追加
+        return np.array(sequences), np.array(sequence_labels), conf_array, np.array(sequence_groups), feature_columns
 
     def build_model(self, input_size: int, num_classes: int) -> TennisLSTMModel:
         """PyTorch LSTMモデルの構築"""
@@ -338,7 +337,8 @@ class TennisLSTMTrainer:
         df, success = self.load_dataset(csv_path)
         if not success: return
         
-        X, y, confidence, feature_names = self.prepare_sequences(df)
+        # ★ groups を受け取る
+        X, y, confidence, groups, feature_names = self.prepare_sequences(df)
         if len(X) == 0:
             print("エラー: シーケンスが作成されませんでした。処理を終了します。")
             return
@@ -350,36 +350,42 @@ class TennisLSTMTrainer:
         num_classes = len(original_labels)
         print(f"クラス数: {num_classes}, アクティブラベル: {self.active_phase_labels}")
 
-        # --- ★★★★★ 修正ポイント１：ここでクラスの重みを計算・定義します ★★★★★ ---
-        class_weights = compute_class_weight(
-            class_weight='balanced',
-            classes=np.unique(y_mapped),
-            y=y_mapped
-        )
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_mapped), y=y_mapped)
         class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(DEVICE)
         print(f"クラスの重みを計算しました: {class_weights}")
-        # --- ここまで ---
 
         n_splits = self.config.get('n_splits', 5)
         if n_splits > 1:
             # 2. 交差検証
-            print(f"\n===== {n_splits}分割交差検証を開始します =====")
-            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            print(f"\n===== {n_splits}分割グループ交差検証を開始します =====")
+            # ★ StratifiedKFold を GroupKFold に変更
+            gkf = GroupKFold(n_splits=n_splits)
             
             all_fold_preds, all_fold_true = [], []
             fold_scores = []
 
-            for fold, (train_val_idx, test_idx) in enumerate(skf.split(X, y_mapped)):
+            # ★ gkf.split に groups を渡す
+            for fold, (train_val_idx, test_idx) in enumerate(gkf.split(X, y_mapped, groups=groups)):
                 print(f"--- FOLD {fold + 1}/{n_splits} ---")
                 
                 X_train_val, X_test = X[train_val_idx], X[test_idx]
                 y_train_val, y_test = y_mapped[train_val_idx], y_mapped[test_idx]
-                conf_train_val, conf_test = (confidence[train_val_idx], confidence[test_idx]) if self.config['enable_confidence_weighting'] else (None, None)
+                groups_train_val = groups[train_val_idx] # グループも分割
                 
-                X_train, X_val, y_train, y_val, conf_train, conf_val = train_test_split(
-                    X_train_val, y_train_val, *( (conf_train_val,) if conf_train_val is not None else () ), 
-                    test_size=0.2, stratify=y_train_val, random_state=42
-                )
+                conf_train_val, conf_test = (None, None)
+                if self.config['enable_confidence_weighting'] and confidence is not None:
+                    conf_train_val, conf_test = confidence[train_val_idx], confidence[test_idx]
+                
+                # ★ train_test_split の代わりに GroupShuffleSplit を使用
+                gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+                train_idx, val_idx = next(gss.split(X_train_val, y_train_val, groups=groups_train_val))
+
+                X_train, X_val = X_train_val[train_idx], X_train_val[val_idx]
+                y_train, y_val = y_train_val[train_idx], y_train_val[val_idx]
+
+                conf_train, conf_val = (None, None)
+                if conf_train_val is not None:
+                    conf_train, conf_val = conf_train_val[train_idx], conf_train_val[val_idx]
                 
                 scaler = StandardScaler()
                 X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
@@ -389,8 +395,6 @@ class TennisLSTMTrainer:
                 X_test = scaler.transform(X_test.reshape(-1, X_test.shape[-1])).reshape(X_test.shape)
 
                 model = self.build_model(X.shape[2], num_classes)
-                
-                # --- ★★★★★ 修正ポイント２：計算した`class_weights_tensor`を引数として渡します ★★★★★ ---
                 model = self._train_and_evaluate_fold(model, X_train, y_train, X_val, y_val, class_weights_tensor, conf_train, conf_val)
                 
                 true_labels, pred_labels = self._evaluate_model_on_test(model, X_test, y_test, conf_test)
@@ -407,10 +411,17 @@ class TennisLSTMTrainer:
         # 4. 最終モデルの学習と保存
         if self.config['execution_mode'] == 'full':
             print("\n===== 全データを使用して最終モデルの学習を開始します =====")
-            X_train, X_val, y_train, y_val, conf_train, conf_val = train_test_split(
-                X, y_mapped, *( (confidence,) if self.config['enable_confidence_weighting'] else () ),
-                test_size=0.2, stratify=y_mapped, random_state=42
-            )
+            # ★ ここでも GroupShuffleSplit を使用
+            gss_final = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+            train_idx, val_idx = next(gss_final.split(X, y_mapped, groups=groups))
+
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y_mapped[train_idx], y_mapped[val_idx]
+
+            conf_train, conf_val = (None, None)
+            if self.config['enable_confidence_weighting'] and confidence is not None:
+                conf_train, conf_val = confidence[train_idx], confidence[val_idx]
+
             self.scaler = StandardScaler()
             X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
             self.scaler.fit(X_train_reshaped)
@@ -418,8 +429,6 @@ class TennisLSTMTrainer:
             X_val = self.scaler.transform(X_val.reshape(-1, X_val.shape[-1])).reshape(X_val.shape)
             
             self.model = self.build_model(X.shape[2], num_classes)
-            
-            # --- ★★★★★ 修正ポイント３：最終学習でも`class_weights_tensor`を引数として渡します ★★★★★ ---
             self.model = self._train_and_evaluate_fold(self.model, X_train, y_train, X_val, y_val, class_weights_tensor, conf_train, conf_val)
             
             video_names = df['video_name'].unique().tolist() if 'video_name' in df.columns else []

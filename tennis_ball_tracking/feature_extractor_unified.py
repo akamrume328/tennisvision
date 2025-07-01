@@ -11,6 +11,7 @@ from tqdm import tqdm # tqdmをインポート
 import numba
 import cv2
 import argparse
+import re
 
 warnings.filterwarnings('ignore')
 
@@ -51,33 +52,22 @@ def vectorized_rolling_stats(data_matrix: np.ndarray, window: int,
         window_weights = padded_weights[window_start:window_end]
         
         # --- 平均値 (mean) の計算 ---
-        weight_sum = np.sum(window_weights)
-        if weight_sum > 0:
-            weighted_data = window_data * window_weights.reshape(-1, 1)
-            ma_results[i, :] = np.sum(weighted_data, axis=0) / weight_sum
-        else:
-            ma_results[i, :] = np.sum(window_data, axis=0) / window_data.shape[0]
+        ma_results[i, :] = np.sum(window_data, axis=0) / window_data.shape[0]
 
-        # ★★★ ここからが今回の修正箇所 ★★★
-
-        # --- 標準偏差 (std) の計算 (手動実装) ---
-        # E[X^2] - (E[X])^2 を利用
-        mean_val = np.sum(window_data, axis=0) / window_data.shape[0]
+        # --- 標準偏差 (std) の計算 ---
+        mean_val = ma_results[i, :] # 計算済みの平均値を再利用
         mean_sq_val = np.sum(window_data**2, axis=0) / window_data.shape[0]
         variance = mean_sq_val - mean_val**2
-        # 浮動小数点誤差で負になるのを防ぐ
         for j in range(n_cols):
             if variance[j] < 0:
                 variance[j] = 0
         std_results[i, :] = np.sqrt(variance)
 
-        # --- 最大値 (max) の計算 (手動実装) ---
-        # 各列ごとに最大値を計算するループ
+        # --- 最大値 (max) の計算 ---
         for j in range(n_cols):
             max_results[i, j] = np.max(window_data[:, j])
 
-        # --- 最小値 (min) の計算 (手動実装) ---
-        # 各列ごとに最小値を計算するループ
+        # --- 最小値 (min) の計算 ---
         for j in range(n_cols):
             min_results[i, j] = np.min(window_data[:, j])
     
@@ -822,66 +812,61 @@ class UnifiedFeatureExtractor:
         
         return df_cleaned
 
-    def create_temporal_features(self, features_df: pd.DataFrame, window_sizes: List[int] = [3, 5, 10, 15]) -> pd.DataFrame:
-        """時系列特徴量を作成（Numba高速化対応）"""
+    def create_temporal_features(self, features_df: pd.DataFrame, top_features: Optional[List[str]] = None, window_sizes: List[int] = [3, 5, 10, 15]) -> pd.DataFrame:
+        """
+        時系列特徴量を作成（上位特徴量リストがあれば絞り込み、なければ全数値特徴量を対象とする）
+        """
         temporal_df = features_df.copy()
         
-        numeric_columns = features_df.select_dtypes(include=[np.number]).columns
-        target_columns = [col for col in numeric_columns if col not in ['frame_number', 'original_frame_number']]
-        
-        print(f"時系列特徴量作成対象: {len(target_columns)}特徴量 (Numba高速化対応)")
+        target_columns = []
+        features_to_generate_set = set(top_features) if top_features else None
+
+        if features_to_generate_set:
+            print("✅ 上位特徴量リストに基づいて、時系列特徴量の計算対象を絞り込みます。")
+            required_base_features = set()
+            for feature_name in features_to_generate_set:
+                base_name = re.sub(r'(_ma|_std|_max|_min|_diff|_trend|_cv)_[0-9]+$', '', feature_name)
+                base_name = re.sub(r'(_diff|_diff_abs|_diff2|_diff2_abs)$', '', base_name)
+                required_base_features.add(base_name)
+            target_columns = [col for col in required_base_features if col in features_df.columns]
+        else:
+            # ▼▼▼ リストが空の場合の正しい処理 ▼▼▼
+            print("✅ 利用可能な全ての数値特徴量から時系列特徴量を計算します。")
+            target_columns = features_df.select_dtypes(include=np.number).columns.tolist()
+            # 計算に不要なカラムや、ID的なカラムを除外
+            cols_to_exclude = ['frame_number', 'original_frame_number', 'label', 'interpolated']
+            target_columns = [col for col in target_columns if col not in cols_to_exclude]
+
+        if not target_columns:
+            print("⚠️ 時系列特徴量の計算対象となるカラムが見つかりませんでした。")
+            return temporal_df
+
+        print(f"\n時系列特徴量の計算対象を {len(target_columns)} 個に絞り込みました。")
         
         is_interpolated = features_df.get('interpolated', pd.Series([False] * len(features_df))).values
-        
-        print("  データをNumPy配列に変換中...")
         data_matrix = features_df[target_columns].values.astype(np.float64)
         data_matrix = np.nan_to_num(data_matrix, nan=0.0)
         
         new_features = {}
-        
         for window in tqdm(window_sizes, desc="時系列特徴量(ウィンドウ別)", leave=False):
-            print(f"  ウィンドウサイズ {window} の特徴量作成中... (Numba 高速化)")
-            
             ma_results, std_results, max_results, min_results = vectorized_rolling_stats(
                 data_matrix, window, is_interpolated
             )
-            
+
             for i, col in enumerate(target_columns):
-                new_features[f'{col}_ma_{window}'] = ma_results[:, i]
-                new_features[f'{col}_std_{window}'] = std_results[:, i]
-                new_features[f'{col}_max_{window}'] = max_results[:, i]
-                new_features[f'{col}_min_{window}'] = min_results[:, i]
-                
-                if window <= 5:
-                    diff1, diff2 = self.vectorized_diff_features(
-                        data_matrix[:, i], is_interpolated
-                    )
-                    new_features[f'{col}_diff'] = diff1
-                    new_features[f'{col}_diff_abs'] = np.abs(diff1)
-                    new_features[f'{col}_diff2'] = diff2
-                    new_features[f'{col}_diff2_abs'] = np.abs(diff2)
-                
-                if window == 5:
-                    trend_values = self.vectorized_rolling_trend(data_matrix[:, i], window)
-                    new_features[f'{col}_trend_{window}'] = trend_values
-                    
-                    ma_vals = ma_results[:, i]
-                    std_vals = std_results[:, i]
-                    cv_values = np.divide(std_vals, np.abs(ma_vals), 
-                                        out=np.zeros_like(std_vals), where=ma_vals!=0)
-                    new_features[f'{col}_cv_{window}'] = cv_values
+                # features_to_generate_set が None (全生成) or 該当特徴量が含まれている場合のみ追加
+                if not features_to_generate_set or f'{col}_ma_{window}' in features_to_generate_set:
+                     new_features[f'{col}_ma_{window}'] = ma_results[:, i]
+                if not features_to_generate_set or f'{col}_std_{window}' in features_to_generate_set:
+                     new_features[f'{col}_std_{window}'] = std_results[:, i]
+                if not features_to_generate_set or f'{col}_max_{window}' in features_to_generate_set:
+                     new_features[f'{col}_max_{window}'] = max_results[:, i]
+                if not features_to_generate_set or f'{col}_min_{window}' in features_to_generate_set:
+                     new_features[f'{col}_min_{window}'] = min_results[:, i]
         
-        new_features['data_quality'] = (~is_interpolated).astype(float)
-        
-        interpolation_kernel = np.ones(10) / 10
-        interpolation_ratio = np.convolve(is_interpolated.astype(float), interpolation_kernel, mode='same')
-        new_features['interpolation_ratio'] = interpolation_ratio
-        
-        print("  新しい特徴量をDataFrameに統合中...")
         for feature_name, feature_values in new_features.items():
             temporal_df[feature_name] = feature_values
         
-        print(f"時系列特徴量作成完了: {len(new_features)}特徴量追加")
         return temporal_df
     
     def vectorized_diff_features(self, data_array: np.ndarray,
@@ -1316,22 +1301,33 @@ class UnifiedFeatureExtractor:
         return frame_labels
 
 # --- ★★★ ここからが新しい統一処理フロー ★★★ ---
-
-    def run_extraction_pipeline(self, mode: str, video_name: str = None):
+#修正箇所
+    def run_extraction_pipeline(self, mode: str, video_name: str = None, filter_features: bool = False):
         """
-        指定されたモードで特徴量抽出パイプラインを実行する
-        mode: 'train' または 'predict'
+        指定されたモードで特徴量抽出パイプラインを実行する (最終特徴量リストの出力を追加)
         """
         print(f"\n{'='*20}\n=== 統一特徴量抽出パイプライン開始 (モード: {mode.upper()}) ===\n{'='*20}")
-
-        # 1. データ読み込み (両モード共通)
+        
+        top_100_features = []
+        if filter_features:
+            print("🔬 特徴量絞り込みモードが有効です。")
+            top_features_path = Path('./models/lgbm_model/top_100_features.txt')
+            if top_features_path.exists():
+                print(f"上位特徴量リストを読み込みます: {top_features_path}")
+                with open(top_features_path, 'r', encoding='utf-8') as f:
+                    top_100_features = [line.strip() for line in f if line.strip()]
+                if not top_100_features:
+                    print(f"⚠️ 特徴量リストファイルは存在しますが、中身が空です。絞り込みは行われません。")
+            else:
+                print(f"⚠️ 上位特徴量リストが見つかりません: {top_features_path}。絞り込みは行われません。")
+        
+        # 1. データソースの読み込み (変更なし)
         tracking_features = self.load_tracking_features(video_name)
         court_coordinates = self.load_court_coordinates(video_name)
         if not tracking_features:
             print("❌ トラッキングデータが見つからないため、処理を終了します。")
             return
 
-        # trainモードでのみアノテーションを読み込む
         phase_annotations = {}
         if mode == 'train':
             phase_annotations = self.load_phase_annotations(video_name)
@@ -1339,33 +1335,40 @@ class UnifiedFeatureExtractor:
                 print("❌ 学習モードですが、局面アノテーションデータが見つかりません。処理を終了します。")
                 return
 
-        # 2. 処理対象の動画キーを決定
+        # 2. 処理対象の動画キーを決定 (変更なし)
         video_keys_to_process = set(tracking_features.keys())
         if mode == 'train':
-            # アノテーションとトラッキングの両方に存在するキーのみを対象にする
             common_keys = video_keys_to_process.intersection(phase_annotations.keys())
             print(f"アノテーションとトラッキングで共通の動画キー: {len(common_keys)}件")
             video_keys_to_process = common_keys
         
+        if not video_keys_to_process:
+            print("❌ 処理対象の動画が見つかりません。")
+            return
+            
         print(f"\n処理対象の動画 ({len(video_keys_to_process)}件): {sorted(list(video_keys_to_process))}")
-
-        # 3. 動画ごとにループ処理し、結果をリストに格納
+        
+        # 3. 動画ごとにループ処理 (変更なし)
         all_processed_dfs = []
         for vid_name in tqdm(sorted(list(video_keys_to_process)), desc="動画別特徴量抽出"):
             print(f"\n--- 処理中: {vid_name} ---")
             
-            # コアとなる特徴量計算処理
-            features_df = self.process_single_video(vid_name, tracking_features[vid_name], court_coordinates.get(vid_name))
+            features_df = self.process_single_video(
+                vid_name, 
+                tracking_features[vid_name], 
+                court_coordinates.get(vid_name), 
+                top_100_features
+            )
+            
             if features_df.empty:
                 print(f"⚠️ {vid_name} の特徴量生成に失敗。スキップします。")
                 continue
 
-            # モードに応じた後処理
             if mode == 'train':
-                final_df = self.apply_labels_and_filter(features_df, phase_annotations[vid_name])
-            else: # predict mode
+                final_df = self.apply_labels_and_filter(features_df, phase_annotations.get(vid_name))
+            else:
                 final_df = features_df
-            
+
             if not final_df.empty:
                 all_processed_dfs.append(final_df)
 
@@ -1373,58 +1376,214 @@ class UnifiedFeatureExtractor:
             print("❌ 処理できるデータがありませんでした。")
             return
             
-        # 4. 最後に全動画を結合して保存
+        # 4. 全動画のデータを結合 (変更なし)
         combined_df = pd.concat(all_processed_dfs, ignore_index=True)
-        self.save_features(combined_df, mode)
+        
+        # 5. 最終的な列の絞り込み (変更なし)
+        if filter_features and top_100_features:
+            essential_cols = ['video_name', 'frame_number', 'original_frame_number', 'label']
+            cols_to_keep = [col for col in essential_cols if col in combined_df.columns]
+            existing_top_features = [col for col in top_100_features if col in combined_df.columns]
+            cols_to_keep.extend(existing_top_features)
+            final_columns = list(dict.fromkeys(cols_to_keep))
+            print(f"\n最終的なデータフレームの特徴量を {len(combined_df.columns)} から {len(final_columns)} に絞り込みます。")
+            combined_df = combined_df[final_columns]
+            
+        # --- ▼▼▼ ここからが今回の修正箇所です ▼▼▼ ---
+
+        # 6. 特徴量CSVを保存し、保存パスを取得
+        saved_csv_path = self.save_features(combined_df, mode)
+
+        # 7. 最終的な特徴量リストをテキストファイルに保存
+        if saved_csv_path:
+            try:
+                column_list = combined_df.columns.tolist()
+                list_filename = f"{saved_csv_path.stem}_column_list.txt"
+                list_output_path = saved_csv_path.parent / list_filename
+
+                with open(list_output_path, 'w', encoding='utf-8') as f:
+                    f.write(f"# Final Features List for: {saved_csv_path.name}\n")
+                    f.write(f"# Total Features: {len(column_list)}\n")
+                    f.write("="*40 + "\n\n")
+                    for col_name in column_list:
+                        f.write(f"{col_name}\n")
+
+                print(f"✅ 最終的な特徴量リストを保存しました: {list_output_path}")
+
+            except Exception as e:
+                print(f"❌ 特徴量リストの保存中にエラーが発生しました: {e}")
+        
+        # --- ▲▲▲ ここまでが今回の修正箇所です ▲▲▲ ---
+
         print(f"\n🎉 統一特徴量抽出パイプライン完了 (モード: {mode.upper()})")
 
-    def process_single_video(self, video_name: str, tracking_data_dict: Dict, court_coords: Optional[Dict]) -> pd.DataFrame:
-        """単一動画の全フレームから特徴量を計算する共通コアロジック"""
+    def process_single_video(self, video_name: str, tracking_data_dict: Dict, court_coords: Optional[Dict], top_100_features: List[str]) -> pd.DataFrame:
         normalized_tracking_data = self.normalize_frame_numbers(tracking_data_dict)
         features_df = self.safe_create_dataframe_from_tracking_data(normalized_tracking_data, video_name)
-        if features_df.empty:
-            return pd.DataFrame()
+        if features_df.empty: return pd.DataFrame()
 
-        # 特徴量エンジニアリング
         features_df = self.handle_missing_values(features_df)
         features_df = self.create_court_features(features_df, court_coords)
-        features_df = self.create_temporal_features(features_df)
+        features_df = self.create_temporal_features(features_df, top_100_features)
         features_df = self.create_contextual_features(features_df)
+        features_df = self.create_advanced_features(features_df)
         
         features_df['video_name'] = video_name
         return features_df
 
     def apply_labels_and_filter(self, features_df: pd.DataFrame, phase_data: Dict) -> pd.DataFrame:
-        """特徴量計算済みのDataFrameにラベルを付与し、フィルタリングする"""
-        if not phase_data:
-            return pd.DataFrame()
+        if not phase_data: return pd.DataFrame()
         
         total_frames = len(features_df)
         phase_changes = phase_data.get('phase_changes', [])
         frame_labels = self.interpolate_phase_labels(phase_changes, total_frames, phase_data.get('fps', 30.0))
         
-        if len(frame_labels) != len(features_df):
-            min_len = min(len(frame_labels), len(features_df))
-            features_df = features_df.iloc[:min_len]
-            features_df['label'] = frame_labels[:min_len]
-        else:
-            features_df['label'] = frame_labels
+        min_len = min(len(frame_labels), len(features_df))
+        features_df, frame_labels = features_df.iloc[:min_len], frame_labels[:min_len]
+        features_df['label'] = frame_labels
         
         filtered_df = features_df[features_df['label'] != -1].copy()
         print(f"ラベル付与＆フィルタリング完了。 {len(features_df)} -> {len(filtered_df)} フレーム")
         return filtered_df
 
-    def save_features(self, df: pd.DataFrame, mode: str):
-        """モードに応じて特徴量を保存"""
+    def save_features(self, df: pd.DataFrame, mode: str) -> Optional[Path]:
+        """
+        特徴量DataFrameをCSVとして保存し、保存先のパスを返すように修正。
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if mode == 'train':
-            output_dir, filename_prefix = self.train_features_dir, "tennis_features_"
-        else: # predict
-            output_dir, filename_prefix = self.predict_features_dir, "tennis_inference_features_"
+        output_dir = self.train_features_dir if mode == 'train' else self.predict_features_dir
+        
+        # 'video_name' 列から動画のベース名を安全に取得
+        video_basename = "general"
+        if 'video_name' in df.columns and not df['video_name'].empty:
+            # 最初のビデオ名を取得し、サフィックスなどを除去
+            first_video_name = df['video_name'].iloc[0]
+            video_basename = re.sub(r'_\d{8}_\d{6}$', '', first_video_name) # 例: _20230101_120000 を除去
+        
+        filename = f"tennis_features_{video_basename}_{timestamp}.csv" if mode == 'train' else f"tennis_inference_features_{video_basename}_{timestamp}.csv"
+        output_path = output_dir / filename
+        
+        try:
+            df.to_csv(output_path, index=False, encoding='utf-8-sig')
+            print(f"✅ 特徴量を保存しました: {output_path}")
+            return output_path
+        except Exception as e:
+            print(f"❌ 特徴量の保存中にエラーが発生しました: {e}")
+            return None
+        
+    def create_advanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        提案された高度な特徴量（時間経過、加速度、意図など）をすべて計算して追加する。
+        """
+        print("高度な特徴量を作成中...")
+        adf = df.copy()
+        
+        # --- 1. 時間経過に基づく特徴量 ---
+        if 'ball_detected' in adf.columns:
+            ball_detected_arr = adf['ball_detected'].values
+            last_detection_indices = np.where(ball_detected_arr == 1)[0]
+            if len(last_detection_indices) > 0:
+                split_indices = np.searchsorted(last_detection_indices, np.arange(len(adf)))
+                prev_detection_indices = last_detection_indices[np.maximum(0, split_indices - 1)]
+                adf['frames_since_last_ball_detection'] = np.arange(len(adf)) - prev_detection_indices
+                adf.loc[:last_detection_indices[0], 'frames_since_last_ball_detection'] = 0
+            else:
+                adf['frames_since_last_ball_detection'] = np.arange(len(adf))
+            print("  ✅ 'frames_since_last_ball_detection' を作成しました。")
+
+        # --- 2. 運動状態の高度化 ---
+        if 'ball_velocity_y' in adf.columns:
+            adf['ball_vertical_velocity'] = adf['ball_velocity_y']
+            print("  ✅ 'ball_vertical_velocity' を作成しました。")
+
+        if 'ball_velocity_x' in adf.columns and 'ball_velocity_y' in adf.columns:
+            accel_x = np.diff(adf['ball_velocity_x'].values, prepend=adf['ball_velocity_x'].values[0])
+            accel_y = np.diff(adf['ball_velocity_y'].values, prepend=adf['ball_velocity_y'].values[0])
+            adf['ball_acceleration_magnitude'] = np.sqrt(accel_x**2 + accel_y**2)
+            print("  ✅ 'ball_acceleration_magnitude' を作成しました。")
+
+        if 'ball_velocity_x' in adf.columns and 'ball_velocity_y' in adf.columns:
+            vx = adf['ball_velocity_x'].values
+            vy = adf['ball_velocity_y'].values
+            angles = np.arctan2(vy, vx)
+            angle_diff = np.diff(angles, prepend=angles[0])
+            angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
+            adf['ball_trajectory_angle_change'] = np.abs(angle_diff)
+            print("  ✅ 'ball_trajectory_angle_change' を作成しました。")
             
-        output_path = output_dir / f"{filename_prefix}{timestamp}.csv"
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
-        print(f"✅ 特徴量を保存しました: {output_path}")
+        for player in ['front', 'back']:
+            if f'player_{player}_x' in adf.columns and f'player_{player}_y' in adf.columns:
+                p_vx = np.diff(adf[f'player_{player}_x'].values, prepend=adf[f'player_{player}_x'].values[0])
+                p_vy = np.diff(adf[f'player_{player}_y'].values, prepend=adf[f'player_{player}_y'].values[0])
+                p_ax = np.diff(p_vx, prepend=p_vx[0])
+                p_ay = np.diff(p_vy, prepend=p_vy[0])
+                adf[f'player_{player}_acceleration'] = np.sqrt(p_ax**2 + p_ay**2)
+                print(f"  ✅ 'player_{player}_acceleration' を作成しました。")
+
+        # --- 3. 意図・関係性に基づく特徴量 ---
+        if all(col in adf.columns for col in ['ball_x', 'ball_y', 'player_front_x', 'player_front_y', 'player_back_x', 'player_back_y', 'ball_closer_to_front']):
+            p_front_vx = np.diff(adf['player_front_x'].values, prepend=adf['player_front_x'].values[0])
+            p_front_vy = np.diff(adf['player_front_y'].values, prepend=adf['player_front_y'].values[0])
+            p_back_vx = np.diff(adf['player_back_x'].values, prepend=adf['player_back_x'].values[0])
+            p_back_vy = np.diff(adf['player_back_y'].values, prepend=adf['player_back_y'].values[0])
+            
+            closer_is_front = adf['ball_closer_to_front'].values == 1
+            player_vx = np.where(closer_is_front, p_front_vx, p_back_vx)
+            player_vy = np.where(closer_is_front, p_front_vy, p_back_vy)
+            player_x = np.where(closer_is_front, adf['player_front_x'].values, adf['player_back_x'].values)
+            player_y = np.where(closer_is_front, adf['player_front_y'].values, adf['player_back_y'].values)
+
+            vec_to_ball_x = adf['ball_x'].values - player_x
+            vec_to_ball_y = adf['ball_y'].values - player_y
+            
+            dot_product = player_vx * vec_to_ball_x + player_vy * vec_to_ball_y
+            
+            adf['player_is_moving_towards_ball'] = (dot_product > 0).astype(int)
+            print("  ✅ 'player_is_moving_towards_ball' を作成しました。")
+
+        if 'player_front_court_y' in adf.columns and 'player_back_court_y' in adf.columns:
+            adf['players_y_separation'] = np.abs(adf['player_front_court_y'] - adf['player_back_court_y'])
+            print("  ✅ 'players_y_separation' を作成しました。")
+            
+        # --- ▼▼▼ ここからが今回の追加箇所です ▼▼▼ ---
+
+        # --- 4. 「ボールが見えない」情報を活用する特徴量 ---
+        # └─ 'last_known_ball_y_position' (ヘルパー特徴量)
+        if 'ball_court_y' in adf.columns and 'ball_detected' in adf.columns:
+            # ボールが検出された時のY座標をコピーし、検出されなかった時はNaNにする
+            last_known_y = adf['ball_court_y'].copy()
+            last_known_y[adf['ball_detected'] == 0] = np.nan
+            
+            # ffill (forward fill) を使って、NaNを直前の有効な値で埋める
+            last_known_y = pd.Series(last_known_y).ffill().values
+            # 最初にNaNがあった場合は、コート中央(0.5)で埋める
+            adf['last_known_ball_y_position'] = np.nan_to_num(last_known_y, nan=0.5)
+            print("  ✅ 'last_known_ball_y_position' (ヘルパー特徴量) を作成しました。")
+        
+        # └─ 'far_side_ball_disappearance_rate'
+        if 'last_known_ball_y_position' in adf.columns and 'ball_detected' in adf.columns:
+            # ボールが「見えない」状態 (1=見えない, 0=見える)
+            ball_disappeared = 1 - adf['ball_detected'].values
+            
+            # ボールの最後の観測位置が「コートの奥側」だったか (1=奥, 0=手前)
+            # 奥側のベースラインが0, 手前が1なので、0.5未満が奥側
+            is_on_far_side = (adf['last_known_ball_y_position'].values < 0.5).astype(int)
+            
+            # 「奥側でボールが見えなくなった」イベントを捉える
+            far_side_disappearance_event = ball_disappeared * is_on_far_side
+            
+            # 30フレームの移動窓で、イベントの発生率を計算
+            window = 30
+            kernel = np.ones(window) / window
+            adf['far_side_ball_disappearance_rate'] = np.convolve(far_side_disappearance_event, kernel, mode='same')
+            print("  ✅ 'far_side_ball_disappearance_rate' を作成しました。")
+            
+        # --- ▲▲▲ ここまでが今回の追加箇所です ▲▲▲ ---
+
+        added_features = len(adf.columns) - len(df.columns)
+        print(f"高度な特徴量作成完了: {added_features}個の特徴量を追加しました。")
+        
+        return adf
 
 # --- メイン実行ブロック ---
 if __name__ == "__main__":
@@ -1432,8 +1591,10 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, required=True, choices=['train', 'predict'], help="実行モード ('train' または 'predict')")
     parser.add_argument('--data_dir', type=str, default='training_data', help="データが格納されているディレクトリ")
     parser.add_argument('--video', type=str, default=None, help="(オプション) 処理対象の単一ビデオ名")
+    parser.add_argument('--filter_features', action='store_true', help="上位特徴量リストを使って特徴量を絞り込みます")
     
     args = parser.parse_args()
 
     extractor = UnifiedFeatureExtractor(data_dir=args.data_dir)
-    extractor.run_extraction_pipeline(mode=args.mode, video_name=args.video)
+    extractor.run_extraction_pipeline(mode=args.mode, video_name=args.video, filter_features=args.filter_features)
+    #修正箇所

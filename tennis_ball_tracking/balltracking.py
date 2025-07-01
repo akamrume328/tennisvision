@@ -1364,408 +1364,238 @@ class BallTracker:
         if self.frame_reader:
             self.frame_reader.print_performance_stats()
 
-def main():
-    """メイン関数 - 対話式の選択メニュー"""
+
+def get_user_settings() -> dict:
+    """ユーザーに対話形式で処理設定を尋ね、辞書として返す"""
+    settings = {}
+    
     # モデルのパスを設定
-    model_path = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_31.pt"
+    settings['model_path'] = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/models/weights/best_5_31.pt"
     
     # 推論時の画像サイズを選択
     print("推論時の画像サイズを選択してください:")
     print("1. 1920 (高精度・低速)")
     print("2. 1280 (バランス)")
     print("3. 640 (高速・低精度)")
-    
     imgsz_options = {1: 1920, 2: 1280, 3: 640}
-    
     while True:
         try:
             imgsz_choice = int(input("画像サイズを選択 (1, 2, または 3): "))
             if imgsz_choice in imgsz_options:
-                inference_imgsz = imgsz_options[imgsz_choice]
+                settings['imgsz'] = imgsz_options[imgsz_choice]
                 break
             else:
                 print("1, 2, または 3 を入力してください。")
         except ValueError:
             print("数字を入力してください。")
     
-    print(f"選択された画像サイズ: {inference_imgsz}")
-    
     # フレームスキップ設定の選択
-    print("\nフレームスキップ設定を選択してください:")
-    print("1. 全フレーム処理（スキップなし・高精度）")
-    print("2. 2フレームに1回処理（2倍高速）")
-    print("3. 3フレームに1回処理（3倍高速）")
-    print("4. 4フレームに1回処理（4倍高速）")
-    print("5. 5フレームに1回処理（5倍高速）")
-    print("6. 6フレームに1回処理（6倍高速）")
-    print("7. 10フレームに1回処理（10倍高速）")
-    
+    print("\nフレームスキップ設定を選択してください (1 = スキップなし):")
     frame_skip_options = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 10}
-    
+    for k, v in frame_skip_options.items():
+        print(f"{k}. {v}フレームに1回処理")
     while True:
         try:
             skip_choice = int(input(f"フレームスキップを選択 (1-{len(frame_skip_options)}): "))
             if skip_choice in frame_skip_options:
-                frame_skip = frame_skip_options[skip_choice]
+                settings['frame_skip'] = frame_skip_options[skip_choice]
                 break
             else:
                 print(f"1 から {len(frame_skip_options)} の間の数字を入力してください。")
         except ValueError:
             print("数字を入力してください。")
-    
-    if frame_skip == 1:
-        print("選択されたモード: 全フレーム処理（最高精度）")
-    else:
-        print(f"選択されたモード: {frame_skip}フレームに1回処理（約{frame_skip}倍高速）")
-    
-    # プロファイリング設定の選択
-    print("\nパフォーマンス測定を行いますか？")
-    print("1. はい（詳細な処理時間を測定・わずかにオーバーヘッドあり）")
-    print("2. いいえ（通常処理）")
-    
-    while True:
-        try:
-            profiling_choice = int(input("選択 (1 または 2): "))
-            if profiling_choice in [1, 2]:
-                break
-            else:
-                print("1 または 2 を入力してください。")
-        except ValueError:
-            print("数字を入力してください。")
-    
-    enable_profiling = (profiling_choice == 1)
-    use_cprofile = False
-    
-    if enable_profiling:
-        print("詳細プロファイリングも行いますか？")
-        print("1. はい（cProfileによる詳細分析・より多くのオーバーヘッド）")
-        print("2. いいえ（基本測定のみ）")
-        
-        while True:
-            try:
-                cprofile_choice = int(input("選択 (1 または 2): "))
-                if cprofile_choice in [1, 2]:
-                    break
-                else:
-                    print("1 または 2 を入力してください。")
-            except ValueError:
-                print("数字を入力してください。")
-        
-        use_cprofile = (cprofile_choice == 1)
-        
-        if use_cprofile:
-            print("詳細プロファイリングが有効です（cProfile使用）")
-        else:
-            print("基本パフォーマンス測定が有効です")
-    else:
-        print("パフォーマンス測定は無効です")
-    
-    # 処理モードの選択
+
+    # プロファイリング設定
+    profiling_choice = input("\nパフォーマンス測定を行いますか？ (yes/no, デフォルト: no): ").strip().lower()
+    settings['enable_profiling'] = (profiling_choice == 'yes')
+
+    # 出力モードの選択
     print("\n出力モードを選択してください:")
     print("1. 動画保存モード（結果を動画ファイルに保存）")
-    print("2. リアルタイム表示モード（リアルタイム表示のみ）")
+    print("2. リアルタイム表示モード（表示のみ）")
     print("3. 学習用データ出力モード（高速・データのみ出力）")
-    
     while True:
         try:
             mode = int(input("モードを選択 (1, 2, または 3): "))
             if mode in [1, 2, 3]:
+                settings['save_video'] = (mode == 1)
+                settings['show_realtime'] = (mode in [1, 2])
+                settings['training_data_only'] = (mode == 3)
                 break
             else:
                 print("1, 2, または 3 を入力してください。")
         except ValueError:
             print("数字を入力してください。")
-    
-    save_video = (mode == 1)
-    show_realtime = (mode in [1, 2])  # モード1,2で表示
-    training_data_only = (mode == 3)  # モード3で学習データのみ
-    
-    if save_video:
-        print("選択されたモード: 動画保存モード")
-    elif show_realtime:
-        print("選択されたモード: リアルタイム表示モード")
-    else:
-        print("選択されたモード: 学習用データ出力モード（高速処理）")
-    
-    # 時系列データ保存オプション（学習データのみモードでは自動で有効)
-    if training_data_only:
-        save_time_series = True
-        print("学習用データ出力モードでは時系列データも自動保存されます")
-    else:
-        print("\n時系列データ出力を行いますか？")
-        print("1. はい（CSVファイルに保存・補間データも含む）")
-        print("2. いいえ")
-        
-        while True:
-            try:
-                save_data_choice = int(input("選択 (1 または 2): "))
-                if save_data_choice in [1, 2]:
-                    break
-                else:
-                    print("1 または 2 を入力してください。")
-            except ValueError:
-                print("数字を入力してください。")
-        
-        save_time_series = (save_data_choice == 1)
-    
-    if save_time_series:
-        print("時系列データをCSVファイルに保存します（補間データも含む）")
-    elif not training_data_only:
-        print("時系列データは保存しません")
-    
-    # 学習用データ保存オプション（学習データのみモードでは自動で有効）
-    if training_data_only:
-        save_training_data = True
-        print("学習用データ出力モードでは学習用データが自動保存されます")
-    else:
-        print("\n学習用データ保存を行いますか？")
-        print("1. はい（特徴量データを保存）")
-        print("2. いいえ")
-        
-        while True:
-            try:
-                save_training_choice = int(input("選択 (1 または 2): "))
-                if save_training_choice in [1, 2]:
-                    break
-                else:
-                    print("1, 2 を入力してください。")
-            except ValueError:
-                print("数字を入力してください。")
-    
-        save_training_data = (save_training_choice == 1)
-    
-    if save_training_data:
-        print("学習用データを保存します")
-    elif not training_data_only:
-        print("学習用データは保存しません")
 
-    # フレーム読み込み最適化をデフォルトで有効に設定
-    use_optimized_reader = True
-    
-    # フレームスキップが有効な場合のみ最適化オプションを表示
-    if frame_skip > 1:
-        print("\n⚡ フレーム読み込み最適化が有効です（推奨設定）")
-        
-        # 上級ユーザー向けオプション
-        advanced_choice = input("標準処理に変更しますか？ (no/yes, デフォルト: no): ").strip().lower()
-        if advanced_choice == 'yes':
-            use_optimized_reader = False
-            print("🔄 標準フレーム読み込みを使用します")
-        else:
-            print("⚡ 最適化されたフレーム読み込みを使用します（大幅高速化）")
+    # データ保存設定
+    settings['save_time_series'] = settings['training_data_only'] or \
+        (input("\n時系列データ(CSV)を保存しますか？ (yes/no, デフォルト: no): ").strip().lower() == 'yes')
+    settings['save_training_data'] = settings['training_data_only'] or \
+        (input("学習用データ(JSON)を保存しますか？ (yes/no, デフォルト: no): ").strip().lower() == 'yes')
+
+    # フレーム読み込み最適化
+    if settings['frame_skip'] > 1:
+        use_optimized = input("\n⚡フレーム読み込み最適化を使用しますか？(yes/no, デフォルト: yes): ").strip().lower()
+        settings['use_optimized_reader'] = (use_optimized != 'no')
     else:
-        use_optimized_reader = False
-        print("全フレーム処理のため、標準読み込みを使用します")
+        settings['use_optimized_reader'] = False
 
-    # 動画ファイルの選択
-    print("\n処理する動画ファイルを選択してください:")
-    video_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw")
-    video_files = sorted([f for f in video_dir.glob("*.mp4")])
+    return settings
 
-    if not video_files:
-        print(f"エラー: {video_dir} にMP4ファイルが見つかりません。")
-        while True:
-            video_path_input = input("動画ファイルのフルパスを入力してください: ")
-            if Path(video_path_input).is_file() and video_path_input.lower().endswith(".mp4"):
-                video_path = video_path_input
-                break
-            else:
-                print("無効なファイルパスまたはMP4ファイルではありません。再入力してください。")
-    else:
-        print("利用可能な動画ファイル:")
-        for i, f_path in enumerate(video_files):
-            print(f"{i + 1}. {f_path.name}")
-        print(f"{len(video_files) + 1}. 別のパスを直接入力する")
-
-        while True:
-            try:
-                video_choice = int(input(f"動画を選択 (1-{len(video_files) + 1}): "))
-                if 1 <= video_choice <= len(video_files):
-                    video_path = str(video_files[video_choice - 1])
-                    break
-                elif video_choice == len(video_files) + 1:
-                    while True:
-                        video_path_input = input("動画ファイルのフルパスを入力してください: ")
-                        if Path(video_path_input).is_file() and video_path_input.lower().endswith(".mp4"):
-                            video_path = video_path_input
-                            break
-                        else:
-                            print("無効なファイルパスまたはMP4ファイルではありません。再入力してください。")
-                    break
-                else:
-                    print(f"1 から {len(video_files) + 1} の間の数字を入力してください。")
-            except ValueError:
-                print("数字を入力してください。")
+def process_video(video_path: str, settings: dict):
+    """1本の動画ファイルに対してトラッキング処理を実行する"""
+    print(f"\n▶️  処理を開始します: {Path(video_path).name}")
     
-    print(f"選択された動画ファイル: {video_path}")
+    tracker = BallTracker(
+        model_path=settings['model_path'],
+        imgsz=settings['imgsz'],
+        save_training_data=settings['save_training_data'],
+        frame_skip=settings['frame_skip'],
+        enable_profiling=settings['enable_profiling'],
+        use_optimized_reader=settings['use_optimized_reader']
+    )
 
-    # トラッカーを初期化（最適化設定を含める）
-    tracker = BallTracker(model_path, imgsz=inference_imgsz, 
-                          save_training_data=save_training_data, frame_skip=frame_skip,
-                          enable_profiling=enable_profiling, use_optimized_reader=use_optimized_reader)
-    
-    print(f"推論画像サイズ: {inference_imgsz}")
-    print(f"フレームスキップ: {frame_skip}フレームに1回処理")
-    if use_optimized_reader and frame_skip > 1:
-        print("⚡ 最適化フレーム読み込み: 有効")
-    
     try:
-        # 動画処理の初期化
         fps, width, height, total_frames = tracker.initialize_video_processing(video_path)
         
-        # 出力ファイルパスの設定
-        output_dir = "C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/output"
+        output_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/output")
+        output_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_name_stem = Path(video_path).stem
         
-        # プロファイリング出力パス
-        profile_output_path = None
-        if enable_profiling:
-            profile_output_path = os.path.join(output_dir, f"performance_report_{timestamp}.json")
-        
-        # 出力ビデオの設定（保存モードの場合のみ）
         out = None
-        output_video_path = None
-        if save_video:
-            output_video_path = os.path.join(output_dir, f"tennis_tracking_{timestamp}.mp4")
+        if settings['save_video']:
+            output_video_path = output_dir / f"tracking_{video_name_stem}_{timestamp}.mp4"
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        
-        # 時系列データ出力パス
-        csv_output_path = None
-        if save_time_series:
-            csv_output_path = os.path.join(output_dir, f"tracking_data_{timestamp}.csv")
-        
-        print(f"処理開始 - FPS: {fps}, 解像度: {width}x{height}")
-        if total_frames > 0:
-            print(f"総フレーム数: {total_frames}")
-        if save_video:
-            print(f"動画出力ファイル: {output_video_path}")
-        if save_time_series:
-            print(f"CSVデータ出力ファイル: {csv_output_path}")
-        
-        if training_data_only:
-            print("学習用データ出力モード - 高速処理中...")
-            print("注意: 画面表示は行われません。進捗を確認してください。")
-        else:
-            print("リアルタイム表示中... 'q'キーで終了")
-        
+            out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
+            print(f"📹 動画出力先: {output_video_path}")
+
         frame_count = 0
         processed_frame_count = 0
-        start_time = datetime.now()
+        start_time = time.time()
         
-        # cProfile設定
-        profiler = None
-        if use_cprofile:
-            profiler = cProfile.Profile()
-            profiler.enable()
-        
-        try:
-            while True:
-                # 最適化されたフレーム読み込み
-                ret, frame, current_frame_number = tracker.read_next_frame()
-                if not ret:
+        while True:
+            ret, frame, current_frame_number = tracker.read_next_frame()
+            if not ret:
+                break
+            
+            frame_count = current_frame_number
+            result_frame, was_processed = tracker.process_frame_optimized(
+                frame, frame_count, settings['training_data_only']
+            )
+            if was_processed:
+                processed_frame_count += 1
+            
+            if settings['save_video'] and out:
+                out.write(result_frame)
+            
+            if settings['show_realtime']:
+                cv2.imshow('Tennis Ball Tracking', result_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("ユーザーによって処理が中断されました")
                     break
-                
-                frame_count = current_frame_number
-                
-                # フレーム処理（最適化リーダー使用時は常に処理対象フレーム）
-                if tracker.use_optimized_reader and tracker.frame_skip > 1:
-                    # 最適化リーダーは処理対象フレームのみ返すので直接処理
-                    result_frame, was_processed = tracker.process_frame_core(
-                        frame, current_frame_number, is_lightweight=training_data_only
-                    )
-                    processed_frame_count += 1
-                    was_processed = True
-                else:
-                    # 標準処理（従来のフレームスキップロジック）
-                    result_frame, was_processed = tracker.process_frame_optimized(
-                        frame, frame_count, training_data_only
-                    )
-                    if was_processed:
-                        processed_frame_count += 1
-                
-                # 動画保存（保存モードの場合のみ）
-                if save_video and out is not None and not training_data_only:
-                    out.write(result_frame)
-                
-                # リアルタイム表示
-                if show_realtime and not training_data_only:
-                    cv2.imshow('Tennis Ball Tracking', result_frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q'):
-                        print("ユーザーによって処理が中断されました")
-                        break
-                
-                # 進捗表示（最適化対応）
-                if training_data_only:
-                    if frame_count % 200 == 0:  # 200フレームごとに表示
-                        elapsed_time = (datetime.now() - start_time).total_seconds()
-                        fps_current = frame_count / elapsed_time if elapsed_time > 0 else 0
-                        progress = (frame_count / total_frames * 100) if total_frames > 0 else 0
-                        
-                        if tracker.use_optimized_reader:
-                            print(f"⚡処理中... フレーム: {frame_count}/{total_frames if total_frames > 0 else '?'} "
-                                  f"({progress:.1f}%) | 処理速度: {fps_current:.1f} FPS | "
-                                  f"処理フレーム: {processed_frame_count} | 軌跡: {len(tracker.ball_trajectory)}")
-                        else:
-                            processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-                            print(f"処理中... フレーム: {frame_count}/{total_frames if total_frames > 0 else '?'} "
-                                  f"({progress:.1f}%) | 処理速度: {fps_current:.1f} FPS | "
-                                  f"実処理数: {processed_frame_count} ({processing_rate:.1f}%) | 軌跡: {len(tracker.ball_trajectory)}")
-                elif frame_count % 100 == 0:
-                    if tracker.use_optimized_reader:
-                        print(f"⚡表示フレーム: {frame_count} | 処理フレーム: {processed_frame_count}")
-                    else:
-                        processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-                        print(f"表示フレーム: {frame_count} | 処理フレーム: {processed_frame_count} ({processing_rate:.1f}%)")
+            
+            if (frame_count % 100 == 0) and not settings['show_realtime']:
+                progress = (frame_count / total_frames * 100) if total_frames > 0 else 0
+                print(f"  ...処理中: フレーム {frame_count}/{total_frames} ({progress:.1f}%)")
 
-        finally:
-            # cProfileを停止
-            if profiler:
-                profiler.disable()
-            
-            # 最終統計の表示（フレームスキップ考慮）
-            elapsed_time = (datetime.now() - start_time).total_seconds()
-            avg_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
-            processing_rate = (processed_frame_count / frame_count * 100) if frame_count > 0 else 0
-            expected_rate = (100 / frame_skip) if frame_skip > 0 else 100
-            
-            print(f"\n=== 処理完了統計 ===")
-            print(f"総フレーム数: {frame_count}")
-            print(f"実処理フレーム数: {processed_frame_count}")
-            print(f"実際の処理率: {processing_rate:.1f}%")
-            print(f"期待処理率: {expected_rate:.1f}%（{frame_skip}フレームに1回）")
-            print(f"平均処理速度: {avg_fps:.1f} FPS")
-            print(f"処理時間: {elapsed_time:.1f}秒")
-            if frame_skip > 1:
-                print(f"スピードアップ: 約{frame_skip}倍")
-            
-            if tracker.save_training_data:
-                feature_count = len(tracker.training_features)
-                time_series_count = len(tracker.time_series_data)
-                print(f"学習用特徴量: {feature_count}件")
-                print(f"時系列データ: {time_series_count}件")
-                print(f"軌跡ポイント: {len(tracker.ball_trajectory)}件")
-            
-            # 時系列データを保存
-            if save_time_series and csv_output_path:
-                tracker.save_time_series_data(csv_output_path)
-            
-            # 学習用データを保存
-            if save_training_data:
-                video_name = Path(video_path).stem
-                tracker.save_tracking_features_with_video_info(video_name, fps, total_frames)
+        # --- 終了処理 ---
+        elapsed_time = time.time() - start_time
+        avg_fps = frame_count / elapsed_time if elapsed_time > 0 else 0
+        print(f"✅ 処理完了: {Path(video_path).name}")
+        print(f"   - 処理時間: {elapsed_time:.1f}秒, 平均処理速度: {avg_fps:.1f} FPS")
+
+        if settings['save_time_series']:
+            csv_path = output_dir / f"timeseries_{video_name_stem}_{timestamp}.csv"
+            tracker.save_time_series_data(str(csv_path))
         
-        # フレームリーダーのパフォーマンス統計を表示
-        if tracker.use_optimized_reader and enable_profiling:
-            tracker.print_reader_performance_stats()
-    
+        if settings['save_training_data']:
+            tracker.save_tracking_features_with_video_info(video_name_stem, fps, total_frames)
+            
+        if settings['enable_profiling']:
+            tracker.profiler.print_summary()
+            report_path = output_dir / f"performance_{video_name_stem}_{timestamp}.json"
+            tracker.profiler.save_detailed_report(str(report_path))
+            
     except Exception as e:
-        print(f"エラーが発生しました: {e}")
+        import traceback
+        print(f"❌ {Path(video_path).name} の処理中にエラーが発生しました: {e}")
+        traceback.print_exc()
+    finally:
+        # 'out'変数が定義されているか確認してから解放
+        if 'out' in locals() and out:
+            out.release()
         tracker.release_video_resources()
-        return False
+        cv2.destroyAllWindows()
+
+def main():
+    """メイン関数 - 単一処理か一括処理かを選択"""
+    print("=== YOLOv8 テニスボールトラッカー ===")
+    print("1. 単一動画処理モード")
+    print("2. 複数動画一括処理モード")
     
-    return True
+    while True:
+        try:
+            mode_choice = int(input("処理モードを選択 (1 または 2): "))
+            if mode_choice in [1, 2]:
+                break
+            else:
+                print("1 または 2 を入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+
+    # --- ステップ1で追加した関数を呼び出して設定を取得 ---
+    settings = get_user_settings()
+
+    if mode_choice == 1:
+        # --- 単一動画処理 ---
+        video_dir = Path("C:/Users/akama/AppData/Local/Programs/Python/Python310/python_file/projects/tennisvision/data/raw")
+        video_files = sorted([f for f in video_dir.glob("*.mp4")])
+
+        if not video_files:
+            video_path = input(f"エラー: {video_dir} に動画がありません。動画のフルパスを入力してください: ")
+        else:
+            print("\n利用可能な動画ファイル:")
+            for i, f_path in enumerate(video_files):
+                print(f"{i + 1}. {f_path.name}")
+            
+            while True:
+                try:
+                    video_choice = int(input(f"動画を選択 (1-{len(video_files)}): "))
+                    if 1 <= video_choice <= len(video_files):
+                        video_path = str(video_files[video_choice - 1])
+                        break
+                    else:
+                        print(f"1 から {len(video_files)} の間の数字を入力してください。")
+                except ValueError:
+                    print("数字を入力してください。")
+        
+        if Path(video_path).exists():
+            # ステップ1で追加した動画処理関数を呼び出し
+            process_video(video_path, settings)
+        else:
+            print(f"ファイルが見つかりません: {video_path}")
+
+    elif mode_choice == 2:
+        # --- 複数動画一括処理 ---
+        video_dir_path = input("\n一括処理したい動画が含まれるフォルダのパスを入力してください (例: C:/videos/raw): ").strip()
+        
+        video_dir = Path(video_dir_path)
+        if not video_dir.is_dir():
+            print(f"エラー: 指定されたフォルダが見つかりません: {video_dir}")
+            return
+            
+        video_files = sorted([str(f) for f in video_dir.glob("*.mp4")])
+        if not video_files:
+            print(f"エラー: {video_dir} にMP4ファイルが見つかりません。")
+            return
+        
+        print(f"\n--- 一括処理を開始します ({len(video_files)}件の動画) ---")
+        for video_path in video_files:
+            # ステップ1で追加した動画処理関数を動画ごとに呼び出し
+            process_video(video_path, settings)
+            
+        print("\n🎉 全ての動画の一括処理が完了しました！")
 
 if __name__ == "__main__":
     main()

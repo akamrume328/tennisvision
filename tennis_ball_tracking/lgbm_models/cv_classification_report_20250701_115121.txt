@@ -1,0 +1,19 @@
+===== 交差検証 最終結果 =====
+
+平均精度: 0.9229 (+/- 0.0077)
+平均F1スコア: 0.9225 (+/- 0.0078)
+
+総合分類レポート (全Fold):
+                   precision    recall  f1-score   support
+
+   point_interval       0.94      0.94      0.94    373649
+            rally       0.91      0.95      0.93    158398
+serve_front_deuce       0.92      0.87      0.89     31604
+   serve_front_ad       0.89      0.85      0.87     24674
+ serve_back_deuce       0.87      0.85      0.86     29036
+    serve_back_ad       0.87      0.80      0.84     22138
+       changeover       0.91      0.87      0.89     37999
+
+         accuracy                           0.92    677498
+        macro avg       0.90      0.88      0.89    677498
+     weighted avg       0.92      0.92      0.92    677498

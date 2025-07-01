@@ -15,7 +15,7 @@ import copy
 warnings.filterwarnings('ignore')
 
 # 機械学習ライブラリ
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split, GroupShuffleSplit, GroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 from sklearn.utils.class_weight import compute_class_weight
@@ -145,10 +145,7 @@ class TennisLSTMTrainer:
             print(f"データセット読み込みエラー: {e}")
             return pd.DataFrame(), False
 
-    # _validate_and_clean_labels, prepare_sequences, build_model, _train_epoch, _validate_epoch, _train_and_evaluate_fold, _evaluate_model_on_test
-    # までのメソッドは元のスクリプトから変更ありません。
-    # 以下に、元のスクリプトの該当部分をそのままコピー＆ペーストしてください。
-    # (ここでは簡潔にするため省略します)
+ 
     def _validate_and_clean_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """ラベル値の検証と修正"""
         original_count = len(df)
@@ -164,7 +161,7 @@ class TennisLSTMTrainer:
             print("ラベル検証・修正完了。入力データが空でした。")
         return df
 
-    def prepare_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
+    def prepare_sequences(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]: # 返り値の型ヒントを変更
         """時系列シーケンスデータの作成"""
         print("時系列シーケンス作成開始...")
         df_cleaned = self._validate_and_clean_labels(df)
@@ -185,9 +182,9 @@ class TennisLSTMTrainer:
                 confidence_scores = np.ones(len(df_cleaned))
                 print("⚠️ 'interpolation_ratio'列が見つからないため、信頼度重み付けは実質的に無効です。")
         else:
-             print("ℹ️ 信頼度重み付けは設定で無効になっています。")
+                print("ℹ️ 信頼度重み付けは設定で無効になっています。")
 
-        sequences, sequence_labels, confidence_sequences = [], [], []
+        sequences, sequence_labels, confidence_sequences, sequence_groups = [], [], [], [] # ★ sequence_groups を追加
         step_size = max(1, int(self.config['sequence_length'] * (1 - self.config.get('overlap_ratio', 0.5))))
 
         for video in pd.unique(video_names):
@@ -198,14 +195,18 @@ class TennisLSTMTrainer:
             for i in range(0, len(video_X) - self.config['sequence_length'] + 1, step_size):
                 sequences.append(video_X[i:i + self.config['sequence_length']])
                 sequence_labels.append(video_y[i + self.config['sequence_length'] - 1])
+                sequence_groups.append(video) # ★ シーケンスに対応するビデオ名を追加
                 if video_conf is not None:
                     confidence_sequences.append(video_conf[i:i + self.config['sequence_length']])
         
         print(f"作成されたシーケンス数: {len(sequences)}")
         
         conf_array = np.array(confidence_sequences) if confidence_sequences else None
+
+        X_sequences = np.array(sequences, dtype=np.float32)
         
-        return np.array(sequences), np.array(sequence_labels), conf_array, feature_columns
+        # ★ 返り値に np.array(sequence_groups) を追加
+        return X_sequences, np.array(sequence_labels), conf_array, np.array(sequence_groups), feature_columns
 
     def build_model(self, input_size: int, num_classes: int) -> TennisLSTMModel:
         """PyTorch LSTMモデルの構築"""
@@ -346,7 +347,8 @@ class TennisLSTMTrainer:
         df, success = self.load_dataset(csv_path)
         if not success: return None
         
-        X, y, confidence, feature_names = self.prepare_sequences(df)
+        # groups を受け取るように変更済み
+        X, y, confidence, groups, feature_names = self.prepare_sequences(df)
         if len(X) == 0:
             print("エラー: シーケンスが作成されませんでした。処理を終了します。")
             return None
@@ -364,33 +366,40 @@ class TennisLSTMTrainer:
 
         n_splits = self.config.get('n_splits', 5)
         cv_results = None
+
+        # --- 交差検証のセクション ---
         if n_splits > 1:
-            print(f"\n===== {n_splits}分割交差検証を開始します =====")
-            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            
+            print(f"\n===== {n_splits}分割グループ交差検証を開始します =====")
+            gkf = GroupKFold(n_splits=n_splits)
+
             all_fold_preds, all_fold_true = [], []
             fold_scores = []
 
-            for fold, (train_val_idx, test_idx) in enumerate(skf.split(X, y_mapped)):
+            # gkf.splitにgroupsを渡す
+            for fold, (train_val_idx, test_idx) in enumerate(gkf.split(X, y_mapped, groups=groups)):
                 print(f"--- FOLD {fold + 1}/{n_splits} ---")
                 
-                # ... (データ分割のロジックは変更なし) ...
                 X_train_val, X_test = X[train_val_idx], X[test_idx]
                 y_train_val, y_test = y_mapped[train_val_idx], y_mapped[test_idx]
+                groups_train_val = groups[train_val_idx] # グループ情報も分割
                 
                 conf_train_val, conf_test = (None, None)
                 if self.config.get('enable_confidence_weighting', False) and confidence is not None:
-                     conf_train_val, conf_test = confidence[train_val_idx], confidence[test_idx]
+                        conf_train_val, conf_test = confidence[train_val_idx], confidence[test_idx]
 
-                # train_test_splitに渡す配列リストを動的に構築
-                split_arrays = [X_train_val, y_train_val]
-                if conf_train_val is not None:
-                    split_arrays.append(conf_train_val)
+                # ★★★★★ ここからが修正の核心ポイント (1/2) ★★★★★
+                # train_test_split の代わりに GroupShuffleSplit で訓練/検証を分割
+                gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+                train_idx, val_idx = next(gss.split(X_train_val, y_train_val, groups=groups_train_val))
 
-                split_results = train_test_split(*split_arrays, test_size=0.2, stratify=y_train_val, random_state=42)
+                # インデックスを使って各データをスライス
+                X_train, X_val = X_train_val[train_idx], X_train_val[val_idx]
+                y_train, y_val = y_train_val[train_idx], y_train_val[val_idx]
                 
-                X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
-                conf_train, conf_val = (split_results[4], split_results[5]) if conf_train_val is not None else (None, None)
+                conf_train, conf_val = (None, None)
+                if conf_train_val is not None:
+                    conf_train, conf_val = conf_train_val[train_idx], conf_train_val[val_idx]
+                # ★★★★★ ここまで ★★★★★
 
                 scaler = StandardScaler()
                 X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])
@@ -411,23 +420,24 @@ class TennisLSTMTrainer:
                 fold_scores.append({'accuracy': acc, 'f1_score': f1})
                 print(f"FOLD {fold + 1} 結果: Accuracy={acc:.4f}, F1-score={f1:.4f}")
 
-            # --- ★★★ 変更点 ★★★ ---
-            # evaluate_cv_resultsから結果を受け取る
             cv_results = self.evaluate_cv_results(all_fold_true, all_fold_preds, fold_scores)
 
+        # --- 最終モデル学習のセクション ---
         if self.config.get('execution_mode', 'full') == 'full':
             print("\n===== 全データを使用して最終モデルの学習を開始します =====")
-             # ... (最終モデル学習のロジックは変更なし) ...
-            split_arrays = [X, y_mapped]
-            if self.config.get('enable_confidence_weighting', False) and confidence is not None:
-                split_arrays.append(confidence)
-
-            split_results = train_test_split(*split_arrays, test_size=0.2, stratify=y_mapped, random_state=42)
             
-            X_train, X_val, y_train, y_val = split_results[0], split_results[1], split_results[2], split_results[3]
+            # ★★★★★ ここからが修正の核心ポイント (2/2) ★★★★★
+            # 全データを訓練/検証に分ける際も GroupShuffleSplit を使う
+            gss_final = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+            train_idx, val_idx = next(gss_final.split(X, y_mapped, groups=groups))
+
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y_mapped[train_idx], y_mapped[val_idx]
+
             conf_train, conf_val = (None, None)
             if self.config.get('enable_confidence_weighting', False) and confidence is not None:
-                 conf_train, conf_val = (split_results[4], split_results[5])
+                    conf_train, conf_val = confidence[train_idx], confidence[val_idx]
+            # ★★★★★ ここまで ★★★★★
 
             self.scaler = StandardScaler()
             X_train_reshaped = X_train.reshape(-1, X_train.shape[-1])

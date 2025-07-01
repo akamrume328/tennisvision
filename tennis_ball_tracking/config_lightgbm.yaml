@@ -13,6 +13,10 @@ feature_list_path: 'lgbm_models/top_100_features.txt'
 # 学習済みモデルや結果を保存するディレクトリ名
 output_dir: "lgbm_models"
 
+n_splits: 5  # 交差検証の分割数
+validation_size: 0.2  # 検証データの割合
+random_state: 42  # 乱数シード（再現性の確保のため）
+
 # --- LightGBM パラメータ ---
 lgbm_params:
   #GPU利用
@@ -49,3 +53,6 @@ lgbm_params:
 # --- 早期停止設定 ---
 # 何ステップ性能が改善しなかったら学習を打ち切るか
 early_stopping_rounds: 50
+retrain_final_model: true
+
+shap_sample_size: 10000 # SHAP値計算用のサンプル数

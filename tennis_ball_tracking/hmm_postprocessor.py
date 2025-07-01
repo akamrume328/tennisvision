@@ -765,8 +765,8 @@ class HMMSupervisedPostprocessor:
         if not selected_csv_path:
             selected_csv_path = self._select_file_dialog(
                 title="学習データCSVファイル選択 (LSTM予測と真ラベルを含むマージ済みファイル)",
-                directory=Path("./training_data/merged_predictions/"),
-                pattern="merged_*.csv"
+                directory=Path("./lgbm_models"),
+                pattern="*.csv"
             )
         if not selected_csv_path:
             print("❌ CSVファイルが選択されませんでした。処理を中止します。")
@@ -1033,7 +1033,6 @@ if __name__ == "__main__":
 
     forbidden_transitions_config = [
         ('point_interval', 'rally'),
-        ('rally', 'serve_preparation'),
         ('rally', 'serve_front_ad'),
         ('rally', 'serve_back_ad'),
         ('rally', 'serve_front_deuce'),
